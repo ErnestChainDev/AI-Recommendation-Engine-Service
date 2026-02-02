@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+pymysql
+python-jose[cryptography]
+passlib[bcrypt]
+python-multipart
+pydantic
+pydantic[email]
+pydantic-settings
+python-dotenv
+httpx
+scikit-learn
+numpy
+pandas
+openai
+requests
