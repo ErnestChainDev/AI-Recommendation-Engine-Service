@@ -5,9 +5,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from shared.database import db_dependency
 
-from .schemas import RecommendIn  # your existing schema
-from .models import RecommendationResult
-from .crud import save_student_vector, load_recent_vectors
+from .schemas import RecommendIn, RecommendOut
+from .crud import save_student_vector, load_recent_vectors, upsert_recommendation_result
 from .recommendation_logic import (
     CourseItem,
     StudentVector,
@@ -17,14 +16,15 @@ from .recommendation_logic import (
 
 router = APIRouter()
 
-PROFILE_SERVICE_URL = os.getenv("PROFILE_SERVICE_URL", "http://profile-service:8002")
-COURSE_SERVICE_URL = os.getenv("COURSE_SERVICE_URL", "http://course-service:8003")
+PROFILE_SERVICE_URL = os.getenv("PROFILE_SERVICE_URL", "http://profile-service:8002").rstrip("/")
+COURSE_SERVICE_URL = os.getenv("COURSE_SERVICE_URL", "http://course-service:8003").rstrip("/")
 
 
 def build_router(SessionLocal):
     get_db = db_dependency(SessionLocal)
 
-    @router.post("/recommend")
+    # ✅ MATCH QUIZ-SERVICE: POST /ai/recommend
+    @router.post("/recommend", response_model=RecommendOut)
     async def recommend(payload: RecommendIn, db: Session = Depends(get_db)):
         # 1) fetch profile (for CBF)
         interests = ""
@@ -35,6 +35,7 @@ def build_router(SessionLocal):
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 prof_r = await client.get(f"{PROFILE_SERVICE_URL}/profile/by-user/{payload.user_id}")
+
             if prof_r.status_code == 200:
                 prof = prof_r.json()
                 interests = prof.get("interests", "") or ""
@@ -52,21 +53,24 @@ def build_router(SessionLocal):
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 courses_r = await client.get(f"{COURSE_SERVICE_URL}/courses/")
+
             if courses_r.status_code == 200:
                 for c in courses_r.json():
-                    courses.append(CourseItem(
-                        id=int(c["id"]),
-                        code=str(c["code"]),
-                        title=str(c["title"]),
-                        description=str(c.get("description", "")),
-                        program=str(c.get("program", "")),
-                        level=str(c.get("level", "")),
-                        tags=str(c.get("tags", "")),
-                    ))
+                    courses.append(
+                        CourseItem(
+                            id=int(c["id"]),
+                            code=str(c["code"]),
+                            title=str(c["title"]),
+                            description=str(c.get("description", "")),
+                            program=str(c.get("program", "")).strip().upper(),
+                            level=str(c.get("level", "")).strip(),
+                            tags=str(c.get("tags", "")).strip(),
+                        )
+                    )
         except Exception:
             pass
 
-        # 3) build and save THIS student's vector (dataset growth)
+        # 3) build and save THIS student's vector
         feature_vec = build_student_feature_vector(
             score=payload.score,
             total=payload.total,
@@ -91,18 +95,23 @@ def build_router(SessionLocal):
             design=payload.design,
         )
 
-        # 4) load historical vectors for K-Means (now real)
+        # 4) load historical vectors for K-Means
         rows = load_recent_vectors(db, limit=500)
         historical_students: list[StudentVector] = []
         for r in rows:
             try:
                 feats = json.loads(r.features_json or "[]")
                 if isinstance(feats, list) and feats:
-                    historical_students.append(StudentVector(user_id=int(r.user_id), features=[float(x) for x in feats]))
+                    historical_students.append(
+                        StudentVector(
+                            user_id=int(r.user_id),
+                            features=[float(x) for x in feats],
+                        )
+                    )
             except Exception:
                 continue
 
-        # 5) compute final recommendation (program + CBF courses + cluster)
+        # 5) compute final recommendation
         result = recommend_with_kmeans_and_cbf(
             user_id=payload.user_id,
             score=payload.score,
@@ -115,21 +124,24 @@ def build_router(SessionLocal):
             career_goals=career_goals,
             year_level=year_level,
             behavior_score=0.0,
-            historical_students=historical_students if len(historical_students) >= 10 else None,  # avoid garbage clustering early
+            historical_students=historical_students if len(historical_students) >= 10 else None,
             courses=courses if courses else None,
             top_n_courses=10,
         )
 
-        # 6) store program recommendation result (optional but useful)
-        rec = RecommendationResult(
+        # 6) upsert result
+        upsert_recommendation_result(
+            db,
             user_id=payload.user_id,
             attempt_id=payload.attempt_id,
             program=result["recommended_program"],
             confidence=int(result["confidence"]),
-            rationale=str(result["message"]),
+            message=str(result["message"]),
+            percent_score=float(result["percent_score"]),
+            gwa=float(result["gwa"]),
+            rating=str(result["rating"]),
+            gwa_remarks=str(result["gwa_remarks"]),
         )
-        db.add(rec)
-        db.commit()
 
         return result
 
