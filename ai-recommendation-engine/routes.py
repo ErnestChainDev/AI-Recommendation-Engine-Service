@@ -16,7 +16,7 @@ from .recommendation_logic import (
 
 router = APIRouter()
 
-PROFILE_SERVICE_URL = os.getenv("PROFILE_SERVICE_URL", "http://profile-service:8002").rstrip("/")
+PROFILE_SERVICE_URL = os.getenv("PROFILE_SERVICE_URL", "https://profileservice-production-profile.up.railway.app").rstrip("/")
 COURSE_SERVICE_URL = os.getenv("COURSE_SERVICE_URL", "http://course-service:8003").rstrip("/")
 
 
