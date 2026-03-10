@@ -8,41 +8,44 @@ from typing import Dict, List, Tuple, Optional
 # Utilities: text + similarity
 # ----------------------------
 
-# allow letters+numbers; includes basic dash for codes like "CS-101"
 _TOKEN_RE = re.compile(r"[a-z0-9\-]+")
+
 
 def tokenize(text: str) -> List[str]:
     if not text:
         return []
     return _TOKEN_RE.findall(text.lower())
 
+
 def cosine_sim_sparse(a: Dict[str, float], b: Dict[str, float]) -> float:
     if not a or not b:
         return 0.0
+
     dot = 0.0
     for k, v in a.items():
         dot += v * b.get(k, 0.0)
+
     na = math.sqrt(sum(v * v for v in a.values()))
     nb = math.sqrt(sum(v * v for v in b.values()))
     if na == 0.0 or nb == 0.0:
         return 0.0
     return dot / (na * nb)
 
+
 def l2_distance(a: List[float], b: List[float]) -> float:
-    # safe if lengths differ (ignore extra dims)
     n = min(len(a), len(b))
     return math.sqrt(sum((a[i] - b[i]) ** 2 for i in range(n)))
+
 
 # ----------------------------
 # Program normalization
 # ----------------------------
 
-# Your system uses: BSCS / BSIT / BSIS / BTVTED
-# But courses might come as: CS / IT / IS / BTVTED, etc.
 _PROGRAM_ALIASES: Dict[str, str] = {
     "BSCS": "BSCS",
     "CS": "BSCS",
     "COMPUTER SCIENCE": "BSCS",
+    "COMSCI": "BSCS",
 
     "BSIT": "BSIT",
     "IT": "BSIT",
@@ -58,10 +61,23 @@ _PROGRAM_ALIASES: Dict[str, str] = {
     "TVTED": "BTVTED",
 }
 
+
 def normalize_program(p: str) -> str:
     s = (p or "").strip().upper()
     s = re.sub(r"\s+", " ", s)
     return _PROGRAM_ALIASES.get(s, s)
+
+
+def program_label(program: str) -> str:
+    p = normalize_program(program)
+    labels = {
+        "BSCS": "BSCS (Computer Science)",
+        "BSIT": "BSIT (Information Technology)",
+        "BSIS": "BSIS (Information Systems)",
+        "BTVTED": "BTVTED ICT",
+    }
+    return labels.get(p, p or "Unknown Program")
+
 
 # ----------------------------
 # Content-Based Filtering (CBF)
@@ -73,12 +89,13 @@ class CourseItem:
     code: str
     title: str
     description: str
-    program: str      # normalized to: BSCS | BSIT | BSIS | BTVTED
+    program: str
     level: str
     tags: str
 
     def as_text(self) -> str:
         return f"{self.code} {self.title} {self.description} {self.program} {self.level} {self.tags}"
+
 
 class CBFRecommender:
     def __init__(self):
@@ -167,14 +184,16 @@ class CBFRecommender:
             for cid, score in top
         ]
 
+
 # ----------------------------
-# K-Means Clustering (Students)
+# K-Means Clustering
 # ----------------------------
 
 @dataclass
 class StudentVector:
     user_id: int
     features: List[float]
+
 
 class KMeansClusterer:
     def __init__(self, k: int = 4, max_iter: int = 50, seed: int = 42):
@@ -194,7 +213,6 @@ class KMeansClusterer:
 
         random.seed(self.seed)
 
-        # keep only consistent dims
         points = [sv.features for sv in data if sv.features]
         if not points:
             self.centroids = []
@@ -212,7 +230,6 @@ class KMeansClusterer:
 
         self._dim = dim
 
-        # if points < k, we’ll pad
         init_k = min(self.k, len(points))
         self.centroids = [p[:] for p in random.sample(points, k=init_k)]
         while len(self.centroids) < self.k:
@@ -245,7 +262,6 @@ class KMeansClusterer:
         if not features:
             return 0
         if self._dim and len(features) != self._dim:
-            # dimension mismatch -> don't crash, default cluster
             return 0
         return self._nearest_centroid_index(features)
 
@@ -269,6 +285,7 @@ class KMeansClusterer:
         n = float(len(points))
         return [v / n for v in out]
 
+
 # ----------------------------
 # Glue: Program + CBF + KMeans
 # ----------------------------
@@ -286,9 +303,6 @@ def build_student_feature_vector(
     total = max(1, total)
     overall = (score / total) * 100.0
 
-    # IMPORTANT: If your breakdown counts are per-category items,
-    # dividing by TOTAL quiz items can undervalue categories.
-    # But we keep this for now since that's what your service sends.
     logic_pct = (logic / total) * 100.0
     prog_pct = (programming / total) * 100.0
     net_pct = (networking / total) * 100.0
@@ -297,6 +311,7 @@ def build_student_feature_vector(
     interests_len = float(len(tokenize(interests_text)))
 
     return [overall, logic_pct, prog_pct, net_pct, des_pct, interests_len, float(behavior_score)]
+
 
 def recommend_program_from_signals(
     score: int,
@@ -316,13 +331,11 @@ def recommend_program_from_signals(
         "BTVTED": design,
     }
 
-    # choose highest, but stable tie handling
     max_val = max(buckets.values())
     top_programs = [k for k, v in buckets.items() if v == max_val]
 
     program = top_programs[0]
     if len(top_programs) > 1:
-        # tie-breaker via cluster
         cluster_bias = {0: "BSIS", 1: "BSCS", 2: "BSIT", 3: "BTVTED"}
         program = cluster_bias.get(cluster_id % 4, top_programs[0])
 
@@ -330,36 +343,35 @@ def recommend_program_from_signals(
 
     explanations = {
         "BSIS": (
-            "You showed strong logical thinking and analytical skills. "
-            "Information Systems fits you because it focuses on logic, "
-            "systems analysis, and business processes rather than heavy coding."
+            "You showed stronger logical thinking and analytical skills. "
+            "Information Systems fits this pattern because it focuses on logic, "
+            "systems analysis, databases, and business processes."
         ),
         "BSCS": (
             "You performed best in programming-related questions. "
-            "Computer Science is suitable for you because it emphasizes "
-            "programming, algorithms, and problem-solving skills."
+            "Computer Science is suitable because it emphasizes coding, algorithms, "
+            "problem-solving, and deeper technical development."
         ),
         "BSIT": (
-            "Your strength lies in networking and technical infrastructure. "
-            "Information Technology matches you well because it focuses on "
-            "networking, hardware, and system administration."
+            "Your strongest performance appeared in networking and technical infrastructure. "
+            "Information Technology is a good match because it focuses on networking, "
+            "hardware, systems support, and administration."
         ),
         "BTVTED": (
-            "You excelled in design and creative tasks. "
-            "The BTVTED ICT track is ideal for you because it focuses on "
-            "multimedia, design, basic web development, productivity tools, "
-            "and teaching with technology."
+            "You showed stronger results in design and creative technology-related areas. "
+            "BTVTED ICT fits this pattern because it focuses on multimedia, design, "
+            "digital tools, and technology-supported learning."
         ),
     }
 
     rationale = (
-        f"{explanations.get(program)} "
-        f"(Logic={logic}, Programming={programming}, "
-        f"Networking={networking}, Design={design}, "
-        f"Overall Score={score}/{total} or {pct:.1f}%)."
+        f"{explanations.get(program, 'This program best matches your strongest quiz area.')} "
+        f"(Logic={logic}, Programming={programming}, Networking={networking}, "
+        f"Design={design}, Overall Score={score}/{total} or {pct:.1f}%)."
     )
 
     return program, confidence, rationale
+
 
 # ----------------------------
 # GWA + Rating + Explainable Message
@@ -408,32 +420,131 @@ def compute_gwa_and_rating(score: int, total: int) -> Tuple[float, str, str, flo
 
     return round(gwa, 2), rating, remarks, round(percent, 1)
 
+
+def build_preference_aware_program_message(
+    *,
+    preferred_program: str = "",
+    recommended_program: str,
+    logic: int,
+    programming: int,
+    networking: int,
+    design: int,
+    confidence: int,
+    percent_score: float,
+) -> str:
+    preferred = normalize_program(preferred_program)
+    recommended = normalize_program(recommended_program)
+
+    score_map = {
+        "BSIS": int(logic),
+        "BSCS": int(programming),
+        "BSIT": int(networking),
+        "BTVTED": int(design),
+    }
+
+    area_map = {
+        "BSIS": "logic, systems analysis, and business-oriented problem solving",
+        "BSCS": "programming, algorithms, and computational problem-solving",
+        "BSIT": "networking, infrastructure, and technical support",
+        "BTVTED": "design, multimedia, and technology-based teaching tools",
+    }
+
+    recommended_label = program_label(recommended)
+    preferred_label = program_label(preferred) if preferred else ""
+
+    recommended_area = area_map.get(recommended, "your strongest current skill area")
+    preferred_area = area_map.get(preferred, "your preferred skill area")
+    recommended_score = score_map.get(recommended, 0)
+    preferred_score_value = score_map.get(preferred, 0)
+
+    if preferred and preferred == recommended:
+        return (
+            f"Your preferred program is {preferred_label}, and your quiz performance supports that choice. "
+            f"You showed stronger ability in {recommended_area}, which closely matches the demands of {recommended_label}. "
+            f"Based on your current result of {percent_score:.1f}% and a recommendation confidence of {confidence}%, "
+            f"{recommended_label} appears to be a strong fit for both your interest and present performance."
+        )
+
+    if preferred:
+        if recommended_score > preferred_score_value:
+            return (
+                f"You selected {preferred_label} as your preferred program, but your quiz performance suggests that "
+                f"{recommended_label} may currently be a better fit. Your stronger results appeared in {recommended_area}, "
+                f"while your performance related to {preferred_area} was not as strong. This does not mean that "
+                f"{preferred_label} is impossible for you, but based on your current quiz strengths, {recommended_label} "
+                f"is the better match at this time. Your overall score was {percent_score:.1f}% with a recommendation "
+                f"confidence of {confidence}%."
+            )
+
+        return (
+            f"You selected {preferred_label} as your preferred program, but the overall pattern of your quiz answers points "
+            f"more toward {recommended_label}. Even if your interest is still in {preferred_label}, your present strengths "
+            f"are more aligned with {recommended_area}. This is why the system recommends {recommended_label} instead of "
+            f"{preferred_label}. Your overall score was {percent_score:.1f}% with a recommendation confidence of "
+            f"{confidence}%."
+        )
+
+    return (
+        f"Based on your quiz performance, {recommended_label} is the most suitable program for you at this time. "
+        f"Your strongest results appeared in {recommended_area}, which closely aligns with the demands of "
+        f"{recommended_label}. Your overall score was {percent_score:.1f}% with a recommendation confidence of "
+        f"{confidence}%."
+    )
+
+
 def build_explainable_message(
     *,
     gwa: float,
     rating: str,
     gwa_remarks: str,
-    program_rationale: str,
+    preferred_program: str = "",
+    recommended_program: str,
+    confidence: int,
     score: int,
     total: int,
     logic: int,
     programming: int,
     networking: int,
     design: int,
+    program_rationale: str,
 ) -> str:
     pct = (score / max(1, total)) * 100.0
+
+    preference_message = build_preference_aware_program_message(
+        preferred_program=preferred_program,
+        recommended_program=recommended_program,
+        logic=logic,
+        programming=programming,
+        networking=networking,
+        design=design,
+        confidence=confidence,
+        percent_score=pct,
+    )
+
     strengths_summary = (
         f"Strength Breakdown: Logic={logic}, Programming={programming}, "
         f"Networking={networking}, Design={design}."
     )
+
+    preferred_text = (
+        f"Preferred Program: {program_label(preferred_program)}\n"
+        if preferred_program
+        else "Preferred Program: Not specified\n"
+    )
+
     return (
         f"📊 Quiz Rating: {rating} (Estimated GWA: {gwa})\n"
         f"Score: {score}/{total} ({pct:.1f}%)\n"
-        f"Remarks: {gwa_remarks}\n\n"
+        f"Remarks: {gwa_remarks}\n"
+        f"{preferred_text}"
+        f"Recommended Program: {program_label(recommended_program)}\n\n"
         f"🎯 Recommendation Insight:\n"
+        f"{preference_message}\n\n"
+        f"📌 Program Basis:\n"
         f"{program_rationale}\n\n"
         f"{strengths_summary}"
     )
+
 
 def build_student_query_text(
     interests: str,
@@ -441,12 +552,9 @@ def build_student_query_text(
     year_level: str,
     strengths: Dict[str, int],
     total: int,
+    preferred_program: str = "",
 ) -> str:
-    """
-    Threshold is now relative to total items, para gumana kahit 10 items or 40 items.
-    """
     total = max(1, total)
-    # ~5% of total (at least 1)
     thr = max(1, int(round(total * 0.05)))
 
     strength_terms: List[str] = []
@@ -459,7 +567,19 @@ def build_student_query_text(
     if strengths.get("design", 0) >= thr:
         strength_terms += ["design", "multimedia", "instructional", "teaching"]
 
-    return f"{interests} {career_goals} {year_level} {' '.join(strength_terms)}".strip()
+    preferred_tokens = ""
+    preferred = normalize_program(preferred_program)
+    if preferred == "BSCS":
+        preferred_tokens = "computer science programming software development algorithms"
+    elif preferred == "BSIT":
+        preferred_tokens = "information technology networking systems infrastructure support"
+    elif preferred == "BSIS":
+        preferred_tokens = "information systems analysis database business process"
+    elif preferred == "BTVTED":
+        preferred_tokens = "btvted ict multimedia design educational technology teaching"
+
+    return f"{interests} {career_goals} {year_level} {preferred_tokens} {' '.join(strength_terms)}".strip()
+
 
 def recommend_with_kmeans_and_cbf(
     *,
@@ -473,6 +593,7 @@ def recommend_with_kmeans_and_cbf(
     interests: str = "",
     career_goals: str = "",
     year_level: str = "",
+    preferred_program: str = "",
     behavior_score: float = 0.0,
     historical_students: Optional[List[StudentVector]] = None,
     courses: Optional[List[CourseItem]] = None,
@@ -511,21 +632,35 @@ def recommend_with_kmeans_and_cbf(
         gwa=gwa,
         rating=rating_label,
         gwa_remarks=gwa_remarks,
-        program_rationale=rationale,
+        preferred_program=preferred_program,
+        recommended_program=program,
+        confidence=confidence,
         score=score,
         total=total,
         logic=logic,
         programming=programming,
         networking=networking,
         design=design,
+        program_rationale=rationale,
     )
 
     cbf_results: List[Dict] = []
     if courses:
-        strengths = {"logic": logic, "programming": programming, "networking": networking, "design": design}
-        student_text = build_student_query_text(interests, career_goals, year_level, strengths, total=total)
+        strengths = {
+            "logic": logic,
+            "programming": programming,
+            "networking": networking,
+            "design": design,
+        }
+        student_text = build_student_query_text(
+            interests=interests,
+            career_goals=career_goals,
+            year_level=year_level,
+            strengths=strengths,
+            total=total,
+            preferred_program=preferred_program,
+        )
 
-        # normalize course programs once
         normalized_courses = [
             CourseItem(
                 id=c.id,
@@ -546,7 +681,7 @@ def recommend_with_kmeans_and_cbf(
             student_text=student_text,
             courses=normalized_courses,
             top_n=top_n_courses,
-            program_filter=program,  # program is already BSCS/BSIT/BSIS/BTVTED
+            program_filter=program,
         )
 
     return {
@@ -556,14 +691,23 @@ def recommend_with_kmeans_and_cbf(
         "gwa": gwa,
         "rating": rating_label,
         "gwa_remarks": gwa_remarks,
+        "preferred_program": normalize_program(preferred_program) if preferred_program else "",
         "recommended_program": program,
         "confidence": confidence,
         "message": final_message,
         "course_recommendations": cbf_results,
     }
 
+
 # backward compatible
-def recommend_program(score: int, total: int, logic: int = 0, programming: int = 0, networking: int = 0, design: int = 0):
+def recommend_program(
+    score: int,
+    total: int,
+    logic: int = 0,
+    programming: int = 0,
+    networking: int = 0,
+    design: int = 0,
+):
     program, confidence, rationale = recommend_program_from_signals(
         score=score,
         total=total,
