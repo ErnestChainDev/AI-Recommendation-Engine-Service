@@ -21,6 +21,8 @@ router = APIRouter()
 PROFILE_SERVICE_URL = os.getenv("PROFILE_SERVICE_URL", "https://profileservice-production-profile.up.railway.app", ).rstrip("/")
 COURSE_SERVICE_URL = os.getenv("COURSE_SERVICE_URL", "https://course-service-production-csp.up.railway.app", ).rstrip("/")
 
+SERVICE_TOKEN = os.getenv("SERVICE_TOKEN", "")
+
 
 def build_router(SessionLocal):
     get_db = db_dependency(SessionLocal)
@@ -36,7 +38,10 @@ def build_router(SessionLocal):
 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                prof_r = await client.get(f"{PROFILE_SERVICE_URL}/profile/by-user/{payload.user_id}")
+                prof_r = await client.get(
+                    f"{PROFILE_SERVICE_URL}/profile/by-user/{payload.user_id}",
+                    headers={"X-Service-Token": SERVICE_TOKEN},
+                )
 
             if prof_r.status_code == 200:
                 prof = prof_r.json()
