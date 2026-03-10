@@ -37,11 +37,17 @@ def build_router(SessionLocal):
         preferred_program = ""
 
         try:
+            profile_url = f"{PROFILE_SERVICE_URL}/profile/by-user/{payload.user_id}"
             async with httpx.AsyncClient(timeout=10.0) as client:
                 prof_r = await client.get(
-                    f"{PROFILE_SERVICE_URL}/profile/by-user/{payload.user_id}",
+                    profile_url,
                     headers={"X-Service-Token": SERVICE_TOKEN},
                 )
+
+            print("PROFILE URL:", profile_url)
+            print("SERVICE TOKEN EXISTS:", bool(SERVICE_TOKEN))
+            print("PROFILE STATUS:", prof_r.status_code)
+            print("PROFILE BODY:", prof_r.text)
 
             if prof_r.status_code == 200:
                 prof = prof_r.json()
@@ -50,8 +56,9 @@ def build_router(SessionLocal):
                 year_level = prof.get("year_level", "") or ""
                 skills = prof.get("skills", "") or ""
                 preferred_program = normalize_program(prof.get("preferred_program", "") or "")
-        except Exception:
-            pass
+                print("PREFERRED PROGRAM READ:", preferred_program)
+        except Exception as e:
+            print("PROFILE FETCH ERROR:", repr(e))
 
         if skills:
             interests = f"{interests} {skills}".strip()
