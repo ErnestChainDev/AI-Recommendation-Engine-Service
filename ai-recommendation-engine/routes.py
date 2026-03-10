@@ -1,36 +1,38 @@
 import json
 import os
+
 import httpx
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from shared.database import db_dependency
 
-from .schemas import RecommendIn, RecommendOut
+from shared.database import db_dependency
 from .crud import save_student_vector, load_recent_vectors, upsert_recommendation_result
 from .recommendation_logic import (
     CourseItem,
     StudentVector,
     build_student_feature_vector,
     recommend_with_kmeans_and_cbf,
+    normalize_program,
 )
+from .schemas import RecommendIn, RecommendOut
 
 router = APIRouter()
 
-PROFILE_SERVICE_URL = os.getenv("PROFILE_SERVICE_URL", "https://profileservice-production-profile.up.railway.app").rstrip("/")
-COURSE_SERVICE_URL = os.getenv("COURSE_SERVICE_URL", "https://course-service-production-csp.up.railway.app").rstrip("/")
+PROFILE_SERVICE_URL = os.getenv("PROFILE_SERVICE_URL", "https://profileservice-production-profile.up.railway.app", ).rstrip("/")
+COURSE_SERVICE_URL = os.getenv("COURSE_SERVICE_URL", "https://course-service-production-csp.up.railway.app", ).rstrip("/")
 
 
 def build_router(SessionLocal):
     get_db = db_dependency(SessionLocal)
 
-    # ✅ MATCH QUIZ-SERVICE: POST /ai/recommend
     @router.post("/recommend", response_model=RecommendOut)
     async def recommend(payload: RecommendIn, db: Session = Depends(get_db)):
-        # 1) fetch profile (for CBF)
+        # 1) fetch profile (for CBF + preferred program)
         interests = ""
         career_goals = ""
         year_level = ""
         skills = ""
+        preferred_program = ""
 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -42,6 +44,7 @@ def build_router(SessionLocal):
                 career_goals = prof.get("career_goals", "") or ""
                 year_level = prof.get("year_level", "") or ""
                 skills = prof.get("skills", "") or ""
+                preferred_program = normalize_program(prof.get("preferred_program", "") or "")
         except Exception:
             pass
 
@@ -123,11 +126,15 @@ def build_router(SessionLocal):
             interests=interests,
             career_goals=career_goals,
             year_level=year_level,
+            preferred_program=preferred_program,
             behavior_score=0.0,
             historical_students=historical_students if len(historical_students) >= 10 else None,
             courses=courses if courses else None,
             top_n_courses=10,
         )
+
+        # make sure response always includes normalized preferred program
+        result["preferred_program"] = preferred_program
 
         # 6) upsert result
         upsert_recommendation_result(
