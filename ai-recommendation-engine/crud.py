@@ -12,6 +12,14 @@ def load_recent_vectors(db: Session, limit: int = 500):
         .all()
     )
 
+def get_latest_recommendation(db: Session, user_id: int):
+    return (
+        db.query(RecommendationResult)
+        .filter(RecommendationResult.user_id == user_id)
+        .order_by(RecommendationResult.created_at.desc())
+        .first()
+    )
+
 def save_student_vector(
     db: Session,
     *,

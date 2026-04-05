@@ -2,11 +2,11 @@ import json
 import os
 
 import httpx
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from shared.database import db_dependency
-from .crud import save_student_vector, load_recent_vectors, upsert_recommendation_result
+from .crud import save_student_vector, load_recent_vectors, upsert_recommendation_result, get_latest_recommendation
 from .recommendation_logic import (
     CourseItem,
     StudentVector,
@@ -26,6 +26,29 @@ SERVICE_TOKEN = os.getenv("SERVICE_TOKEN", "")
 
 def build_router(SessionLocal):
     get_db = db_dependency(SessionLocal)
+
+    @router.get("/recommendations/{user_id}")
+    def get_recommendation(user_id: int, db: Session = Depends(get_db)):
+        result = get_latest_recommendation(db, user_id)
+
+        if not result:
+            raise HTTPException(status_code=404, detail="No recommendation found")
+
+        return {
+            "user_id": result.user_id,
+            "recommended_program": result.program,
+            "confidence": result.confidence,
+            "percent_score": result.percent_score,
+            "gwa": result.gwa,
+            "rating": result.rating,
+            "gwa_remarks": result.gwa_remarks,
+            "message": result.rationale,
+            "preferred_program": result.preferred_program,
+            "weighted_scores": result.weighted_scores_json or {},
+            "profile_scores": result.profile_scores_json or {},
+            "cluster_id": result.cluster_id,
+            "top_programs": result.top_programs_json or [],
+        }
 
     @router.post("/recommend", response_model=RecommendOut)
     async def recommend(payload: RecommendIn, db: Session = Depends(get_db)):
