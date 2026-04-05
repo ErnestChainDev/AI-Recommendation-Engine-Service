@@ -32,7 +32,7 @@ def build_router(SessionLocal):
         # 1) fetch profile (for CBF + preferred program)
         interests = ""
         career_goals = ""
-        year_level = ""
+        strand = ""
         skills = ""
         preferred_program = ""
 
@@ -53,7 +53,7 @@ def build_router(SessionLocal):
                 prof = prof_r.json()
                 interests = prof.get("interests", "") or ""
                 career_goals = prof.get("career_goals", "") or ""
-                year_level = prof.get("year_level", "") or ""
+                strand = prof.get("strand", "") or ""
                 skills = prof.get("skills", "") or ""
                 preferred_program = normalize_program(prof.get("preferred_program", "") or "")
                 print("PREFERRED PROGRAM READ:", preferred_program)
@@ -108,6 +108,9 @@ def build_router(SessionLocal):
             programming=payload.programming,
             networking=payload.networking,
             design=payload.design,
+            user_skills=list(map(str, skills.split(","))),
+            user_interests=list(map(str, interests.split(","))),
+            user_career_goals=list(map(str, career_goals.split(","))),
         )
 
         # 4) load historical vectors for K-Means
@@ -137,7 +140,7 @@ def build_router(SessionLocal):
             design=payload.design,
             interests=interests,
             career_goals=career_goals,
-            year_level=year_level,
+            strand=strand,
             preferred_program=preferred_program,
             behavior_score=0.0,
             historical_students=historical_students if len(historical_students) >= 10 else None,
@@ -160,6 +163,11 @@ def build_router(SessionLocal):
             gwa=float(result["gwa"]),
             rating=str(result["rating"]),
             gwa_remarks=str(result["gwa_remarks"]),
+            preferred_program=preferred_program,
+            weighted_scores=result.get("weighted_scores"),
+            profile_scores=result.get("profile_scores"),
+            cluster_id=result.get("cluster_id", 0),
+            top_programs=sorted(result.get("weighted_scores", {}), key=result.get("weighted_scores", {}).get, reverse=True),
         )
 
         return result
