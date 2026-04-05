@@ -25,7 +25,7 @@ class RecommendationResult(Base):
     program: Mapped[str] = mapped_column(String(20), nullable=False)
     confidence: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
-    rationale: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    message: Mapped[str] = mapped_column(Text, default="", nullable=False)
 
     percent_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     gwa: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)

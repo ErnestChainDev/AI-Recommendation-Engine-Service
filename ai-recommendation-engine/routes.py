@@ -32,7 +32,10 @@ def build_router(SessionLocal):
         result = get_latest_recommendation(db, user_id)
 
         if not result:
-            raise HTTPException(status_code=404, detail="No recommendation found")
+            return {
+                "message": "No results yet",
+                "course_recommendations": []
+            }
 
         return {
             "user_id": result.user_id,
@@ -42,12 +45,13 @@ def build_router(SessionLocal):
             "gwa": result.gwa,
             "rating": result.rating,
             "gwa_remarks": result.gwa_remarks,
-            "message": result.rationale,
+            "message": result.message,
             "preferred_program": result.preferred_program,
-            "weighted_scores": result.weighted_scores_json or {},
-            "profile_scores": result.profile_scores_json or {},
+            "weighted_scores": json.loads(result.weighted_scores_json or "{}"),
+            "profile_scores": json.loads(result.profile_scores_json or "{}"),
             "cluster_id": result.cluster_id,
-            "top_programs": result.top_programs_json or [],
+            "top_programs": json.loads(result.top_programs_json or "[]"),
+            "course_recommendations": [],
         }
 
     @router.post("/recommend", response_model=RecommendOut)
@@ -174,6 +178,13 @@ def build_router(SessionLocal):
         # make sure response always includes normalized preferred program
         result["preferred_program"] = preferred_program
 
+        # =========================
+        # ✅ CLEAN TOP PROGRAMS
+        # =========================
+        scores = result.get("weighted_scores", {}) or {}
+        top_programs = sorted(scores, key=lambda k: scores[k], reverse=True)
+        
+
         # 6) upsert result
         upsert_recommendation_result(
             db,
@@ -190,7 +201,7 @@ def build_router(SessionLocal):
             weighted_scores=result.get("weighted_scores"),
             profile_scores=result.get("profile_scores"),
             cluster_id=result.get("cluster_id", 0),
-            top_programs=sorted(result.get("weighted_scores", {}), key=result.get("weighted_scores", {}).get, reverse=True),
+            top_programs=top_programs,
         )
 
         return result

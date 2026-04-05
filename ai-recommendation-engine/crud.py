@@ -97,7 +97,7 @@ def upsert_recommendation_result(
     def _apply(row: RecommendationResult):
         row.program = program.upper()
         row.confidence = confidence
-        row.rationale = message
+        row.message = message
 
         row.percent_score = percent_score
         row.gwa = gwa
