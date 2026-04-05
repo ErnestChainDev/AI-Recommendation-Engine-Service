@@ -615,80 +615,42 @@ def build_preference_aware_program_message(
     weighted_scores: Optional[Dict[str, float]] = None,
     profile_scores: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> str:
-    preferred = normalize_program(preferred_program)
+
     recommended = normalize_program(recommended_program)
 
-    score_map = {
-        "BSIS": int(logic),
-        "BSCS": int(programming),
-        "BSIT": int(networking),
-        "BTVTED": int(design),
+    # Identify strongest quiz area
+    strengths = {
+        "BSIS": logic,
+        "BSCS": programming,
+        "BSIT": networking,
+        "BTVTED": design,
     }
 
-    area_map = {
-        "BSIS": "logic, systems analysis, and business-oriented problem solving",
-        "BSCS": "programming, algorithms, and computational problem-solving",
-        "BSIT": "networking, infrastructure, web development, and technical support",
-        "BTVTED": "design, multimedia, and technology-based teaching tools",
+    strongest_area_map = {
+        "BSCS": "programming",
+        "BSIT": "networking",
+        "BSIS": "analytical thinking",
+        "BTVTED": "design and technical skills",
     }
 
-    recommended_label = program_label(recommended)
-    preferred_label = program_label(preferred) if preferred else ""
-    recommended_area = area_map.get(recommended, "your strongest current skill area")
-    preferred_area = area_map.get(preferred, "your preferred skill area")
-    recommended_score = score_map.get(recommended, 0)
-    preferred_score_value = score_map.get(preferred, 0)
+    strongest_area = strongest_area_map.get(recommended, "your strengths")
 
-    # Build profile insight if available
-    profile_note = ""
+    # Profile alignment
+    skills_pct = 0
+    interests_pct = 0
+    goals_pct = 0
+
     if profile_scores:
-        rec_ps = profile_scores.get(recommended, {})
-        skills_pct = int(rec_ps.get("skills", 0) * 100)
-        interests_pct = int(rec_ps.get("interests", 0) * 100)
-        goals_pct = int(rec_ps.get("career_goals", 0) * 100)
-        profile_note = (
-            f" Your profile also shows {skills_pct}% skill alignment, "
-            f"{interests_pct}% interest alignment, and {goals_pct}% career goal alignment "
-            f"with {recommended_label}."
-        )
+        ps = profile_scores.get(recommended, {})
+        skills_pct = int(ps.get("skills", 0) * 100)
+        interests_pct = int(ps.get("interests", 0) * 100)
+        goals_pct = int(ps.get("career_goals", 0) * 100)
 
-    if preferred and preferred == recommended:
-        return (
-            f"Your preferred program is {preferred_label}, and both your quiz performance "
-            f"and profile support that choice. You showed stronger ability in {recommended_area}, "
-            f"which closely matches the demands of {recommended_label}."
-            f"{profile_note} "
-            f"Based on your result of {percent_score:.1f}% and a confidence of {confidence}%, "
-            f"{recommended_label} is a strong fit for you."
-        )
-
-    if preferred:
-        if recommended_score > preferred_score_value:
-            return (
-                f"You selected {preferred_label} as your preferred program, but your quiz "
-                f"performance and profile together suggest that {recommended_label} may currently "
-                f"be a better fit. Your stronger results appeared in {recommended_area}, while "
-                f"your performance related to {preferred_area} was comparatively lower."
-                f"{profile_note} "
-                f"This does not mean {preferred_label} is impossible—but based on your current "
-                f"strengths, {recommended_label} is the better match. "
-                f"Overall score: {percent_score:.1f}% | Confidence: {confidence}%."
-            )
-        return (
-            f"You selected {preferred_label} as your preferred program, but the overall pattern "
-            f"of your quiz answers and profile points more toward {recommended_label}. "
-            f"Your present strengths are more aligned with {recommended_area}."
-            f"{profile_note} "
-            f"This is why the system recommends {recommended_label} over {preferred_label}. "
-            f"Overall score: {percent_score:.1f}% | Confidence: {confidence}%."
-        )
-
+    # 🔥 FINAL SHORT EXPLANATION
     return (
-        f"Based on your quiz performance and profile, {recommended_label} is the most suitable "
-        f"program for you. Your strongest results appeared in {recommended_area}, which closely "
-        f"aligns with the demands of {recommended_label}."
-        f"{profile_note} "
-        f"Overall score: {percent_score:.1f}% | Confidence: {confidence}%."
+        f"You performed strongly in {strongest_area}, and your profile shows "
+        f"high alignment in skills ({skills_pct}%), interests ({interests_pct}%), "
+        f"and career goals ({goals_pct}%) related to {program_label(recommended)}."
     )
 
 
