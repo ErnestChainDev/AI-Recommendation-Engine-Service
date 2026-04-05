@@ -72,7 +72,7 @@ def build_router(SessionLocal):
         if x_service_token != SERVICE_TOKEN:
             raise HTTPException(status_code=403, detail="Forbidden")
 
-    @router.get("/recommendations/{user_id}")
+    @router.get("/recommendations/")
     def get_recommendation(user_id: int, db: Session = Depends(get_db)):
         result = get_latest_recommendation(db, user_id)
 
