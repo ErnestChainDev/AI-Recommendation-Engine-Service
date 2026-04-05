@@ -2,10 +2,11 @@ import json
 import os
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
 
 from shared.database import db_dependency
+from shared.utils import decode_token
 from .crud import save_student_vector, load_recent_vectors, upsert_recommendation_result, get_latest_recommendation
 from .recommendation_logic import (
     CourseItem,
@@ -26,6 +27,50 @@ SERVICE_TOKEN = os.getenv("SERVICE_TOKEN", "")
 
 def build_router(SessionLocal):
     get_db = db_dependency(SessionLocal)
+    JWT_SECRET = os.getenv("JWT_SECRET", "")
+    JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+    SERVICE_TOKEN = os.getenv("SERVICE_TOKEN", "")
+
+    if not JWT_SECRET:
+        raise RuntimeError("JWT_SECRET not configured")
+    if not SERVICE_TOKEN:
+        raise RuntimeError("SERVICE_TOKEN not configured")
+
+    def current_user_id(
+        authorization: str | None = Header(default=None),
+        x_user_id: str | None = Header(default=None, alias="X-User-ID"),
+    ) -> int:
+        if authorization and authorization.lower().startswith("bearer "):
+            token = authorization.split(" ", 1)[1].strip()
+            try:
+                data = decode_token(token, JWT_SECRET, JWT_ALGORITHM)
+                sub = data.get("sub")
+                if not sub:
+                    raise HTTPException(status_code=401, detail="Token missing sub")
+                uid = int(sub)
+                if uid <= 0:
+                    raise HTTPException(status_code=401, detail="Invalid user id")
+                return uid
+            except Exception:
+                raise HTTPException(status_code=401, detail="Invalid token")
+
+        if not x_user_id:
+            raise HTTPException(status_code=401, detail="Missing Authorization or X-User-ID")
+
+        try:
+            uid = int(x_user_id)
+        except ValueError:
+            raise HTTPException(status_code=401, detail="Invalid X-User-ID")
+
+        if uid <= 0:
+            raise HTTPException(status_code=401, detail="Invalid user id")
+        return uid
+
+    def ensure_service_access(x_service_token: str | None) -> None:
+        if not SERVICE_TOKEN:
+            raise HTTPException(status_code=500, detail="SERVICE_TOKEN not configured")
+        if x_service_token != SERVICE_TOKEN:
+            raise HTTPException(status_code=403, detail="Forbidden")
 
     @router.get("/recommendations/{user_id}")
     def get_recommendation(user_id: int, db: Session = Depends(get_db)):
