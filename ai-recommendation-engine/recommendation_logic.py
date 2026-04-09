@@ -72,42 +72,42 @@ PROGRAM_LABELS: Dict[str, str] = {
 PROGRAM_MAPPING: Dict[str, Dict[str, List[str]]] = {
     "BSCS": {
         "interests": [
-            "algorithms", "artificial intelligence",
-            "software engineering", "data structures", "machine learning",
+            "Algorithms & Problem Solving", "Artificial Intelligence",
+            "Software Engineering", "Data Structures", "Machine Learning",
         ],
         "skills": [
-            "programming", "algorithm design", "logical thinking",
-            "debugging", "mathematical analysis",
+            "Programming", "Algorithm Design", "Logical thinking",
+            "Debugging", "Mathematical analysis",
         ],
     },
     "BSIT": {
         "interests": [
-            "web development", "network administration", "system integration",
-            "cybersecurity", "cloud computing",
+            "Web Development", "Network Administration", "System Integration",
+            "Cybersecurity", "Cloud Computing",
         ],
         "skills": [
-            "web development", "network troubleshooting", "system administration",
-            "hardware setup", "cybersecurity basics",
+            "Web development", "Network troubleshooting", "System administration",
+            "Hardware setup", "Cybersecurity basics",
         ],
     },
     "BSIS": {
         "interests": [
-            "business process analysis", "data analytics", "information management",
-            "enterprise systems", "project management",
+            "Business Process Analysis", "Data Analytics", "Information Management",
+            "Enterprise Systems", "Project Management",
         ],
         "skills": [
-            "data analysis", "documentation", "business communication",
-            "system planning", "critical thinking",
+            "Data analysis", "Documentation", "Business communication",
+            "System planning", "Critical thinking",
         ],
     },
     "BTVTED": {
         "interests": [
-            "technical skills development", "teaching", "industrial tools",
-            "curriculum design", "applied technologies",
+            "Technical Skills Development", "Teaching", "Industrial Tools",
+            "Curriculum Design", "Applied Technologies",
         ],
         "skills": [
-            "technical teaching", "hands-on skills", "equipment handling",
-            "instructional planning", "practical problem solving",
+            "Technical teaching", "Hands-on skills", "Equipment handling",
+            "Instructional planning", "Practical problem solving",
         ],
     },
 }
