@@ -642,172 +642,6 @@ def build_student_feature_vector(
 
 
 # ---------------------------------------------------------------------------
-# Explainability Builders (Rule-Based)
-# ---------------------------------------------------------------------------
-
-
-def build_program_rationale(
-    program: str,
-    logic: int,
-    programming: int,
-    networking: int,
-    design: int,
-    score: int,
-    total: int,
-    profile_scores: Optional[Dict[str, Dict[str, float]]] = None,
-) -> str:
-    """
-    Constructs a structured, human-readable rationale for the recommended
-    program based on quiz sub-scores and profile alignment.
-    """
-    pct = (score / max(1, total)) * 100.0
-    p = normalize_program(program)
-
-    explanations: Dict[str, str] = {
-        "BSIS": (
-            "You demonstrated stronger logical thinking and analytical skills. "
-            "Information Systems aligns with this profile because it emphasises "
-            "systems analysis, database management, business processes, and "
-            "information architecture."
-        ),
-        "BSCS": (
-            "You performed best in programming-related items. Computer Science is "
-            "a strong fit because it focuses on algorithm design, software engineering, "
-            "mathematical foundations, and computational problem-solving."
-        ),
-        "BSIT": (
-            "Your performance was strongest in networking, web development, and "
-            "technical infrastructure areas. Information Technology is well-suited "
-            "because it covers networking, system administration, cybersecurity, "
-            "and applied IT solutions."
-        ),
-        "BTVTED": (
-            "You performed strongest in design and creative technology-related areas. "
-            "BTVTED ICT is appropriate because it integrates multimedia production, "
-            "instructional design, digital tools, and technology-supported education."
-        ),
-    }
-
-    profile_note = ""
-    if profile_scores and (ps := profile_scores.get(p)):
-        profile_note = (
-            f" Profile alignment — Skills: {int(ps.get('skills', 0) * 100)}%, "
-            f"Interests: {int(ps.get('interests', 0) * 100)}%, "
-            f"Career Goals: {int(ps.get('career_goals', 0) * 100)}%."
-        )
-
-    return (
-        f"{explanations.get(p, 'This program best matches your strongest academic area.')} "
-        f"(Logic={logic}, Programming={programming}, Networking={networking}, "
-        f"Design={design}, Score={score}/{total} [{pct:.1f}%]).{profile_note}"
-    )
-
-
-def build_weighted_score_breakdown(
-    weighted_scores: Dict[str, float],
-    profile_scores: Dict[str, Dict[str, float]],
-    recommended: str,
-) -> str:
-    """Returns a formatted table of weighted scores per program for transparency."""
-    lines = [
-        "📐 Weighted Score Breakdown",
-        "   Formula: Quiz × 60% | Skills × 20% | Interests × 10% | Goals × 10%",
-        "   " + "─" * 65,
-    ]
-    for prog, ws in sorted(weighted_scores.items(), key=lambda x: x[1], reverse=True):
-        ps = profile_scores.get(prog, {})
-        marker = "  ✅ Recommended" if normalize_program(prog) == normalize_program(recommended) else ""
-        lines.append(
-            f"   {program_label(prog):<38} {ws * 100:5.1f}%"
-            f"  (Skills={ps.get('skills', 0) * 100:.0f}%,"
-            f" Interests={ps.get('interests', 0) * 100:.0f}%,"
-            f" Goals={ps.get('career_goals', 0) * 100:.0f}%)"
-            f"{marker}"
-        )
-    return "\n".join(lines)
-
-
-def build_explainable_message(
-    *,
-    gwa: float,
-    rating: str,
-    gwa_remarks: str,
-    preferred_program: str = "",
-    recommended_program: str,
-    confidence: int,
-    score: int,
-    total: int,
-    logic: int,
-    programming: int,
-    networking: int,
-    design: int,
-    program_rationale: str,
-    weighted_scores: Optional[Dict[str, float]] = None,
-    profile_scores: Optional[Dict[str, Dict[str, float]]] = None,
-    ai_explanation: str = "",
-) -> str:
-    """
-    Assembles the complete, human-readable recommendation report.
-    Optionally includes an AI-generated advisory explanation.
-    """
-    pct = (score / max(1, total)) * 100.0
-
-    preferred_text = (
-        f"Preferred Program  : {program_label(preferred_program)}\n"
-        if preferred_program else "Preferred Program  : Not specified\n"
-    )
-
-    # Highlight strongest quiz area
-    strongest_area = max(
-        [("Logic", logic), ("Programming", programming),
-         ("Networking", networking), ("Design", design)],
-        key=lambda x: x[1],
-    )[0]
-
-    profile_summary = ""
-    if profile_scores and (ps := profile_scores.get(normalize_program(recommended_program))):
-        profile_summary = (
-            f"Profile Alignment  : Skills {int(ps.get('skills', 0) * 100)}% | "
-            f"Interests {int(ps.get('interests', 0) * 100)}% | "
-            f"Career Goals {int(ps.get('career_goals', 0) * 100)}%\n"
-        )
-
-    breakdown_text = (
-        "\n\n" + build_weighted_score_breakdown(weighted_scores, profile_scores, recommended_program)
-        if weighted_scores and profile_scores else ""
-    )
-
-    ai_section = (
-        f"\n\n🤖 AI Advisory Explanation:\n{ai_explanation}"
-        if ai_explanation else ""
-    )
-
-    return (
-        f"{'=' * 60}\n"
-        f"       ACADEMIC PROGRAM RECOMMENDATION REPORT\n"
-        f"{'=' * 60}\n\n"
-        f"📊 Assessment Summary\n"
-        f"   Rating             : {rating} (Est. GWA: {gwa})\n"
-        f"   Score              : {score}/{total} ({pct:.1f}%)\n"
-        f"   Strongest Area     : {strongest_area}\n"
-        f"   Remarks            : {gwa_remarks}\n\n"
-        f"🎓 Recommendation\n"
-        f"   {preferred_text}"
-        f"   Recommended Program: {program_label(recommended_program)}\n"
-        f"   Confidence         : {confidence}%\n"
-        f"   {profile_summary}\n"
-        f"📋 Strengths Summary\n"
-        f"   Logic={logic} | Programming={programming} | "
-        f"Networking={networking} | Design={design}\n\n"
-        f"📌 Program Rationale\n"
-        f"   {program_rationale}"
-        f"{breakdown_text}"
-        f"{ai_section}\n"
-        f"{'=' * 60}"
-    )
-
-
-# ---------------------------------------------------------------------------
 # Student Query Text (for CBF)
 # ---------------------------------------------------------------------------
 
@@ -859,96 +693,170 @@ def build_student_query_text(
 
 
 # ---------------------------------------------------------------------------
+# Explainable AI (XAI) — Report Builder
+# ---------------------------------------------------------------------------
+
+
+def build_program_scores_summary(
+    weighted_scores: Dict[str, float],
+    recommended: str,
+) -> str:
+    """
+    Returns a clean list of program scores with no sub-score breakdown.
+    Format: BSIT (Information Technology) 32.5% ✅ Recommended
+    """
+    lines = []
+    for prog, ws in sorted(weighted_scores.items(), key=lambda x: x[1], reverse=True):
+        marker = " ✅ Recommended" if normalize_program(prog) == normalize_program(recommended) else ""
+        lines.append(f"   {program_label(prog)} {ws * 100:.1f}%{marker}")
+    return "\n".join(lines)
+
+
+def build_explainable_message(
+    *,
+    gwa: float,
+    rating: str,
+    gwa_remarks: str,
+    preferred_program: str = "",
+    recommended_program: str,
+    confidence: int,
+    score: int,
+    total: int,
+    weighted_scores: Optional[Dict[str, float]] = None,
+    profile_scores: Optional[Dict[str, Dict[str, float]]] = None,
+    ai_explanation: str = "",
+    course_recommendations: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """
+    Assembles the complete, human-readable recommendation report.
+
+    Sections (in order):
+        1. Assessment Summary   — GWA, score, rating, remarks
+        2. Recommendation       — Preferred & recommended program
+        3. Explainable AI       — LLM-generated single-paragraph reason
+        4. Program Scores       — Clean percentage list, no formula breakdown
+        5. Suggested Courses    — CBF course recommendations
+    """
+    pct = (score / max(1, total)) * 100.0
+
+    preferred_text = (
+        program_label(preferred_program)
+        if preferred_program else "Not specified"
+    )
+
+    # ── Program Scores Section ────────────────────────────────────────────────
+    scores_section = ""
+    if weighted_scores:
+        scores_section = (
+            "\n\n Recommendation Scores\n"
+            + build_program_scores_summary(weighted_scores, recommended_program)
+        )
+
+    # ── XAI Section ───────────────────────────────────────────────────────────
+    ai_section = (
+        f"\n Explainable AI\n"
+        f"   {ai_explanation}\n"
+        if ai_explanation else ""
+    )
+
+    # ── Suggested Courses Section ─────────────────────────────────────────────
+    courses_section = ""
+    if course_recommendations:
+        course_lines = [
+            f"   {i + 1}. [{c['code']}] {c['title']}  (match: {c['score'] * 100:.1f}%)"
+            for i, c in enumerate(course_recommendations)
+        ]
+        courses_section = (
+            "\n\n 📚 Suggested Courses\n"
+            + "\n".join(course_lines)
+        )
+
+    return (
+        f"{'=' * 60}\n"
+        f"       ACADEMIC PROGRAM RECOMMENDATION REPORT\n"
+        f"{'=' * 60}\n\n"
+        f" Assessment Summary\n"
+        f"   Rating             : {rating} (Est. GWA: {gwa})\n"
+        f"   Score              : {score}/{total} ({pct:.1f}%)\n"
+        f"   Remarks            : {gwa_remarks}\n\n"
+        f" Recommendation\n"
+        f"   Preferred Program  : {preferred_text}\n"
+        f"   Recommended Program: {program_label(recommended_program)}\n"
+        f"{scores_section}"
+        f"{ai_section}"
+        f"{courses_section}\n"
+        f"{'=' * 60}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Explainable AI (XAI) — LLM Integration via OpenRouter
 # ---------------------------------------------------------------------------
 
 
 def build_ai_explanation_prompt(
     recommended_program: str,
+    preferred_program: str,
     weighted_scores: Dict[str, float],
     profile_scores: Dict[str, Dict[str, float]],
-    logic: int,
-    programming: int,
-    networking: int,
-    design: int,
+    user_skills: List[str],
+    user_interests: List[str],
+    user_career_goals: List[str],
     percent: float,
 ) -> str:
     """
-    Constructs a structured prompt for the LLM to generate a human-readable,
-    advisor-style explanation of the recommendation result.
+    Constructs a structured prompt for the LLM to generate a single-paragraph,
+    professional explanation of the recommendation result.
 
-    The prompt includes quiz performance data, weighted scores, and profile
-    alignment metrics to enable a contextually grounded explanation.
-
-    Args:
-        recommended_program: Canonical program code (e.g., "BSCS").
-        weighted_scores: Final weighted score per program.
-        profile_scores: Per-program skills/interests/goals alignment scores.
-        logic: Student's logic sub-score.
-        programming: Student's programming sub-score.
-        networking: Student's networking sub-score.
-        design: Student's design sub-score.
-        percent: Overall quiz percentage score.
-
-    Returns:
-        str: A fully-formatted prompt string ready for the LLM.
+    The paragraph must include:
+      - Student's skills, interests, and career goals
+      - Preferred program vs recommended program
+      - Professional reason why the recommended program suits the student
     """
     rec_label = program_label(recommended_program)
+    pref_label = program_label(preferred_program) if preferred_program else "Not specified"
 
-    # Format weighted scores as a readable table
     scores_table = "\n".join(
         f"  - {program_label(prog)}: {score * 100:.1f}%"
         for prog, score in sorted(weighted_scores.items(), key=lambda x: x[1], reverse=True)
     )
 
-    # Format profile alignment
-    profile_table = "\n".join(
-        f"  - {program_label(prog)}: "
-        f"Skills={int(ps.get('skills', 0) * 100)}%, "
-        f"Interests={int(ps.get('interests', 0) * 100)}%, "
-        f"Career Goals={int(ps.get('career_goals', 0) * 100)}%"
-        for prog, ps in profile_scores.items()
-    )
+    rec_profile = profile_scores.get(normalize_program(recommended_program), {})
 
-    return f"""You are an experienced academic career advisor for an IT college.
+    skills_str     = ", ".join(user_skills)     if user_skills     else "not specified"
+    interests_str  = ", ".join(user_interests)  if user_interests  else "not specified"
+    goals_str      = ", ".join(user_career_goals) if user_career_goals else "not specified"
 
-A student has just completed an academic readiness and aptitude assessment. 
-Based on a hybrid recommendation engine combining K-Means clustering, 
-Content-Based Filtering, and a weighted scoring formula, the system has 
-produced the following results:
+    return f"""You are a professional academic program advisor for an IT college.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-RECOMMENDED PROGRAM: {rec_label}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+A student has completed an academic readiness assessment and the system has produced the following results:
 
-Quiz Performance:
-  - Logic:         {logic}
-  - Programming:   {programming}
-  - Networking:    {networking}
-  - Design:        {design}
-  - Overall Score: {percent:.1f}%
+Preferred Program  : {pref_label}
+Recommended Program: {rec_label}
+Overall Quiz Score : {percent:.1f}%
 
-Weighted Program Scores (Quiz 60% | Skills 20% | Interests 10% | Goals 10%):
+Student Profile:
+  - Skills        : {skills_str}
+  - Interests     : {interests_str}
+  - Career Goals  : {goals_str}
+
+Program Scores:
 {scores_table}
 
-Profile Alignment per Program:
-{profile_table}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Profile Alignment for {rec_label}:
+  - Skills Match     : {int(rec_profile.get('skills', 0) * 100)}%
+  - Interests Match  : {int(rec_profile.get('interests', 0) * 100)}%
+  - Career Goals Match: {int(rec_profile.get('career_goals', 0) * 100)}%
 
 TASK:
-Write a clear, friendly, and professional explanation (3–4 short paragraphs) 
-addressed directly to the student explaining:
-  1. Why {rec_label} is the best match for their profile.
-  2. What specific strengths from their assessment support this recommendation.
-  3. What career paths or opportunities this program can lead to.
-  4. A brief motivational closing statement.
+Write exactly ONE professional paragraph (4–5 sentences) that:
+  1. Mentions the student's skills, interests, and career goals naturally.
+  2. States the preferred program and recommended program clearly.
+  3. Provides a professional reason why {rec_label} is the most suitable program for this student based on the data.
+  4. Does NOT give advice or commands — only provide reasoned justification.
+  5. Sounds like a formal academic program evaluator, not a life coach.
 
-Style guidelines:
-  - Use second-person ("you", "your") to address the student directly.
-  - Avoid revealing raw formula weights or technical computation details.
-  - Sound like a caring academic advisor, not a system report.
-  - Keep each paragraph to 3–4 sentences.
+Do not use bullet points, headers, or multiple paragraphs. Output only the paragraph text.
 """
 
 
@@ -960,23 +868,10 @@ def generate_ai_explanation(
 ) -> str:
     """
     Calls the OpenRouter LLM API to generate a human-readable,
-    advisor-style explanation for the recommendation.
-
-    Uses the model specified by the ``OPENROUTER_MODEL`` environment variable
-    (default: ``qwen/qwen3-235b-a22b:free``).
-
-    Args:
-        prompt: The fully-formatted prompt string from :func:`build_ai_explanation_prompt`.
-        db: Optional database connection (reserved for future logging/persistence).
-        user_id: Optional student ID for logging purposes.
-        conversation_id: Optional conversation ID for logging purposes.
-
-    Returns:
-        str: The LLM-generated advisory explanation, or a graceful fallback
-             message if the API call fails.
+    professional single-paragraph explanation for the recommendation.
     """
     try:
-        import openai  # OpenRouter uses the OpenAI-compatible SDK
+        import openai
 
         api_key = os.getenv("OPENROUTER_API_KEY", "")
         if not api_key:
@@ -1001,15 +896,17 @@ def generate_ai_explanation(
                 {
                     "role": "system",
                     "content": (
-                    "You are a professional academic career advisor.\n"
-                    "Only use the provided data. Do not invent scores, skills, or results.\n"
-                    "Do not contradict the recommendation."
-                ),
+                        "You are a formal academic program evaluator.\n"
+                        "Write only one paragraph (4–5 sentences).\n"
+                        "Only use the provided data. Do not invent scores, skills, or results.\n"
+                        "Do not give advice or commands. Do not use bullet points or headers.\n"
+                        "Do not contradict the recommendation."
+                    ),
                 },
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=600,
-            temperature=0.7,
+            max_tokens=300,
+            temperature=0.5,
         )
 
         explanation = response.choices[0].message.content or ""
@@ -1049,7 +946,6 @@ def recommend_with_kmeans_and_cbf(
     historical_students: Optional[List[StudentVector]] = None,
     courses: Optional[List[CourseItem]] = None,
     top_n_courses: int = 10,
-    # XAI / LLM parameters
     enable_ai_explanation: bool = True,
     db: Any = None,
     conversation_id: Optional[str] = None,
@@ -1057,65 +953,18 @@ def recommend_with_kmeans_and_cbf(
     """
     Main entry point for the hybrid academic program recommendation system.
 
-    This function orchestrates the following pipeline:
-
-    1. **K-Means Clustering** — Groups the student with similar historical
-       students to identify the most relevant peer cluster.
-
-    2. **Profile Scoring** — Computes skills, interests, and career goal
-       alignment scores against each program's keyword profile.
-
-    3. **Weighted Recommendation Formula** — Combines quiz sub-scores and
-       profile alignment into a final weighted score per program.
-
-    4. **GWA & Rating** — Converts the quiz score to an estimated GWA and
-       descriptive academic rating.
-
-    5. **Program Rationale** — Generates a rule-based explanation grounded
-       in the student's specific performance data.
-
-    6. **Explainable AI (XAI)** — Optionally calls an LLM via OpenRouter to
-       produce a human-like, advisor-style narrative explanation.
-
-    7. **Content-Based Filtering (CBF)** — Recommends relevant courses from
-       the recommended program using TF-IDF and cosine similarity.
-
-    Args:
-        user_id: Unique identifier for the student.
-        score: Total raw quiz score.
-        total: Maximum possible quiz score.
-        logic: Sub-score for logic questions (maps to BSIS).
-        programming: Sub-score for programming questions (maps to BSCS).
-        networking: Sub-score for networking questions (maps to BSIT).
-        design: Sub-score for design questions (maps to BTVTED).
-        interests: Free-text description of student interests.
-        career_goals: Free-text description of career goals.
-        strand: Senior High School strand of the student.
-        preferred_program: Student's self-reported preferred program.
-        behavior_score: Optional behavioural engagement score.
-        user_skills: Structured list of student skills.
-        user_interests: Structured list of student interests.
-        user_career_goals: Structured list of student career goals.
-        historical_students: Historical student vectors for K-Means fitting.
-        courses: Course catalogue for CBF recommendations.
-        top_n_courses: Number of course recommendations to return.
-        enable_ai_explanation: If True, calls the LLM to generate an explanation.
-        db: Optional database connection (passed to AI explanation logger).
-        conversation_id: Optional conversation ID for logging.
-
-    Returns:
-        Dict containing all recommendation outputs:
-            - ``user_id``, ``cluster_id``
-            - ``percent_score``, ``gwa``, ``rating``, ``gwa_remarks``
-            - ``preferred_program``, ``recommended_program``, ``confidence``
-            - ``weighted_scores``, ``profile_scores``
-            - ``message`` (full formatted report)
-            - ``ai_explanation`` (LLM-generated advisory text, if enabled)
-            - ``course_recommendations`` (list of CBF-matched courses)
+    Pipeline:
+        1. K-Means Clustering
+        2. Profile Scoring
+        3. Weighted Recommendation Formula
+        4. GWA & Rating
+        5. Explainable AI (XAI) via LLM
+        6. CBF Course Recommendations
+        7. Final Report Message
     """
-    _skills = user_skills or []
+    _skills  = user_skills    or []
     _interests = user_interests or []
-    _goals = user_career_goals or []
+    _goals   = user_career_goals or []
 
     # ── Step 1: K-Means Clustering ──────────────────────────────────────────
     feature_vec = build_student_feature_vector(
@@ -1159,26 +1008,17 @@ def recommend_with_kmeans_and_cbf(
     # ── Step 4: GWA & Rating ────────────────────────────────────────────────
     gwa, rating_label, gwa_remarks, pct = compute_gwa_and_rating(score=score, total=total)
 
-    # ── Step 5: Program Rationale ───────────────────────────────────────────
-    rationale = build_program_rationale(
-        program=recommended_program,
-        logic=logic, programming=programming,
-        networking=networking, design=design,
-        score=score, total=total,
-        profile_scores=profile_scores,
-    )
-
-    # ── Step 6: Explainable AI (XAI) ────────────────────────────────────────
+    # ── Step 5: Explainable AI (XAI) ────────────────────────────────────────
     ai_explanation = ""
     if enable_ai_explanation:
         ai_prompt = build_ai_explanation_prompt(
             recommended_program=recommended_program,
+            preferred_program=preferred_program,
             weighted_scores=weighted_scores,
             profile_scores=profile_scores,
-            logic=logic,
-            programming=programming,
-            networking=networking,
-            design=design,
+            user_skills=_skills,
+            user_interests=_interests,
+            user_career_goals=_goals,
             percent=pct,
         )
         ai_explanation = generate_ai_explanation(
@@ -1188,35 +1028,17 @@ def recommend_with_kmeans_and_cbf(
             conversation_id=conversation_id,
         )
 
-    # ── Step 7: Final Report Message ─────────────────────────────────────────
-    final_message = build_explainable_message(
-        gwa=gwa,
-        rating=rating_label,
-        gwa_remarks=gwa_remarks,
-        preferred_program=preferred_program,
-        recommended_program=recommended_program,
-        confidence=confidence,
-        score=score,
-        total=total,
-        logic=logic,
-        programming=programming,
-        networking=networking,
-        design=design,
-        program_rationale=rationale,
-        weighted_scores=weighted_scores,
-        profile_scores=profile_scores,
-        ai_explanation=ai_explanation,
-    )
-
-    # ── Step 8: CBF Course Recommendations ───────────────────────────────────
+    # ── Step 6: CBF Course Recommendations ───────────────────────────────────
     cbf_results: List[Dict[str, Any]] = []
     if courses:
         student_text = build_student_query_text(
             interests=interests,
             career_goals=career_goals,
             strand=strand,
-            strengths={"logic": logic, "programming": programming,
-                       "networking": networking, "design": design},
+            strengths={
+                "logic": logic, "programming": programming,
+                "networking": networking, "design": design,
+            },
             total=total,
             preferred_program=preferred_program,
             user_skills=_skills,
@@ -1239,6 +1061,22 @@ def recommend_with_kmeans_and_cbf(
             top_n=top_n_courses,
             program_filter=recommended_program,
         )
+
+    # ── Step 7: Final Report Message ─────────────────────────────────────────
+    final_message = build_explainable_message(
+        gwa=gwa,
+        rating=rating_label,
+        gwa_remarks=gwa_remarks,
+        preferred_program=preferred_program,
+        recommended_program=recommended_program,
+        confidence=confidence,
+        score=score,
+        total=total,
+        weighted_scores=weighted_scores,
+        profile_scores=profile_scores,
+        ai_explanation=ai_explanation,
+        course_recommendations=cbf_results,
+    )
 
     return {
         "user_id": user_id,
@@ -1274,11 +1112,8 @@ def recommend_program(
     """
     Legacy entry point for quiz-only recommendations (no profile inputs).
 
-    Provided for backward compatibility with existing integrations that do
-    not yet supply structured profile data.
-
     Returns:
-        Tuple of (recommended_program_code, confidence_percent, rationale_text).
+        Tuple of (recommended_program_code, confidence_percent, dummy_rationale).
     """
     dummy_profile = compute_profile_scores([], [], [])
     weighted = compute_weighted_scores(
@@ -1289,10 +1124,4 @@ def recommend_program(
     )
     program = pick_recommended_program(weighted)
     confidence = compute_confidence(weighted, program)
-    rationale = build_program_rationale(
-        program=program,
-        logic=logic, programming=programming,
-        networking=networking, design=design,
-        score=score, total=total,
-    )
-    return program, confidence, rationale
+    return program, confidence, ""
