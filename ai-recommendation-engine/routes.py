@@ -7,7 +7,12 @@ from sqlalchemy.orm import Session
 
 from shared.database import db_dependency
 from shared.utils import decode_token
-from .crud import save_student_vector, load_recent_vectors, upsert_recommendation_result, get_latest_recommendation
+from .crud import (
+    save_student_vector,
+    load_recent_vectors,
+    upsert_recommendation_result,
+    get_latest_recommendation
+)
 from .recommendation_logic import (
     CourseItem,
     StudentVector,
@@ -19,9 +24,8 @@ from .schemas import RecommendIn, RecommendOut
 
 router = APIRouter()
 
-PROFILE_SERVICE_URL = os.getenv("PROFILE_SERVICE_URL", "https://profileservice-production-profile.up.railway.app", ).rstrip("/")
-COURSE_SERVICE_URL = os.getenv("COURSE_SERVICE_URL", "https://course-service-production-csp.up.railway.app", ).rstrip("/")
-
+PROFILE_SERVICE_URL = os.getenv("PROFILE_SERVICE_URL", "").rstrip("/")
+COURSE_SERVICE_URL = os.getenv("COURSE_SERVICE_URL", "").rstrip("/")
 SERVICE_TOKEN = os.getenv("SERVICE_TOKEN", "")
 
 
@@ -29,13 +33,13 @@ def build_router(SessionLocal):
     get_db = db_dependency(SessionLocal)
     JWT_SECRET = os.getenv("JWT_SECRET", "")
     JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
-    SERVICE_TOKEN = os.getenv("SERVICE_TOKEN", "")
 
     if not JWT_SECRET:
         raise RuntimeError("JWT_SECRET not configured")
-    if not SERVICE_TOKEN:
-        raise RuntimeError("SERVICE_TOKEN not configured")
 
+    # ----------------------------
+    # AUTH
+    # ----------------------------
     def current_user_id(
         authorization: str | None = Header(default=None),
         x_user_id: str | None = Header(default=None, alias="X-User-ID"),
@@ -45,34 +49,25 @@ def build_router(SessionLocal):
             try:
                 data = decode_token(token, JWT_SECRET, JWT_ALGORITHM)
                 sub = data.get("sub")
-                if not sub:
-                    raise HTTPException(status_code=401, detail="Token missing sub")
-                uid = int(sub)
-                if uid <= 0:
-                    raise HTTPException(status_code=401, detail="Invalid user id")
-                return uid
+                if sub is None:
+                    raise HTTPException(status_code=401, detail="Invalid token")
+                return int(sub)
+            except (ValueError, TypeError):
+                raise HTTPException(status_code=401, detail="Invalid token")
+            except HTTPException:
+                raise
             except Exception:
                 raise HTTPException(status_code=401, detail="Invalid token")
 
         if not x_user_id:
-            raise HTTPException(status_code=401, detail="Missing Authorization or X-User-ID")
+            raise HTTPException(status_code=401, detail="Missing auth")
 
-        try:
-            uid = int(x_user_id)
-        except ValueError:
-            raise HTTPException(status_code=401, detail="Invalid X-User-ID")
+        return int(x_user_id)
 
-        if uid <= 0:
-            raise HTTPException(status_code=401, detail="Invalid user id")
-        return uid
-
-    def ensure_service_access(x_service_token: str | None) -> None:
-        if not SERVICE_TOKEN:
-            raise HTTPException(status_code=500, detail="SERVICE_TOKEN not configured")
-        if x_service_token != SERVICE_TOKEN:
-            raise HTTPException(status_code=403, detail="Forbidden")
-
-    @router.get("/recommendations")
+    # ----------------------------
+    # GET LATEST RESULT
+    # ----------------------------
+    @router.get("/recommendations", response_model=RecommendOut)
     def get_recommendation(
         user_id: int = Depends(current_user_id),
         db: Session = Depends(get_db),
@@ -80,31 +75,41 @@ def build_router(SessionLocal):
         result = get_latest_recommendation(db, user_id)
 
         if not result:
-            return {
-                "message": "No results yet",
-                "course_recommendations": [],
-            }
+            raise HTTPException(status_code=404, detail="No results yet")
 
         return {
             "user_id": result.user_id,
-            "recommended_program": result.program,
-            "confidence": result.confidence,
+            "cluster_id": result.cluster_id,
             "percent_score": result.percent_score,
             "gwa": result.gwa,
             "rating": result.rating,
             "gwa_remarks": result.gwa_remarks,
-            "message": result.message,
+
             "preferred_program": result.preferred_program,
-            "weighted_scores": json.loads(result.weighted_scores_json or "{}"),
-            "profile_scores": json.loads(result.profile_scores_json or "{}"),
-            "cluster_id": result.cluster_id,
-            "top_programs": json.loads(result.top_programs_json or "[]"),
+            "recommended_program": result.program,
+            "confidence": result.confidence,
+
+            "message": result.message,
+            "ai_explanation": result.ai_explanation,
+
+            "weighted_scores": result.get_weighted_scores(),
+            "profile_scores": result.get_profile_scores(),
+
+            "decision_basis": result.decision_basis,
+            "top_programs": result.get_top_programs(),
+
             "course_recommendations": [],
         }
 
+    # ----------------------------
+    # MAIN RECOMMENDATION
+    # ----------------------------
     @router.post("/recommend", response_model=RecommendOut)
     async def recommend(payload: RecommendIn, db: Session = Depends(get_db)):
-        # 1) fetch profile (for CBF + preferred program)
+
+        # ----------------------------
+        # 1. FETCH PROFILE
+        # ----------------------------
         interests = ""
         career_goals = ""
         strand = ""
@@ -112,55 +117,54 @@ def build_router(SessionLocal):
         preferred_program = ""
 
         try:
-            profile_url = f"{PROFILE_SERVICE_URL}/profile/by-user/{payload.user_id}"
             async with httpx.AsyncClient(timeout=10.0) as client:
-                prof_r = await client.get(
-                    profile_url,
+                r = await client.get(
+                    f"{PROFILE_SERVICE_URL}/profile/by-user/{payload.user_id}",
                     headers={"X-Service-Token": SERVICE_TOKEN},
                 )
 
-            print("PROFILE URL:", profile_url)
-            print("SERVICE TOKEN EXISTS:", bool(SERVICE_TOKEN))
-            print("PROFILE STATUS:", prof_r.status_code)
-            print("PROFILE BODY:", prof_r.text)
-
-            if prof_r.status_code == 200:
-                prof = prof_r.json()
+            if r.status_code == 200:
+                prof = r.json()
                 interests = prof.get("interests", "") or ""
                 career_goals = prof.get("career_goals", "") or ""
                 strand = prof.get("strand", "") or ""
                 skills = prof.get("skills", "") or ""
                 preferred_program = normalize_program(prof.get("preferred_program", "") or "")
-                print("PREFERRED PROGRAM READ:", preferred_program)
-        except Exception as e:
-            print("PROFILE FETCH ERROR:", repr(e))
+
+        except Exception:
+            pass
 
         if skills:
             interests = f"{interests} {skills}".strip()
 
-        # 2) fetch courses (for CBF)
+        # ----------------------------
+        # 2. FETCH COURSES
+        # ----------------------------
         courses: list[CourseItem] = []
+
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                courses_r = await client.get(f"{COURSE_SERVICE_URL}/courses/")
+                r = await client.get(f"{COURSE_SERVICE_URL}/courses/")
 
-            if courses_r.status_code == 200:
-                for c in courses_r.json():
+            if r.status_code == 200:
+                for c in r.json():
                     courses.append(
                         CourseItem(
                             id=int(c["id"]),
                             code=str(c["code"]),
                             title=str(c["title"]),
                             description=str(c.get("description", "")),
-                            program=str(c.get("program", "")).strip().upper(),
-                            level=str(c.get("level", "")).strip(),
-                            tags=str(c.get("tags", "")).strip(),
+                            program=str(c.get("program", "")).upper(),
+                            level=str(c.get("level", "")),
+                            tags=str(c.get("tags", "")),
                         )
                     )
         except Exception:
             pass
 
-        # 3) build and save THIS student's vector
+        # ----------------------------
+        # 3. SAVE FEATURE VECTOR
+        # ----------------------------
         feature_vec = build_student_feature_vector(
             score=payload.score,
             total=payload.total,
@@ -169,7 +173,6 @@ def build_router(SessionLocal):
             networking=payload.networking,
             design=payload.design,
             interests_text=interests,
-            behavior_score=0.0,
         )
 
         save_student_vector(
@@ -183,28 +186,33 @@ def build_router(SessionLocal):
             programming=payload.programming,
             networking=payload.networking,
             design=payload.design,
-            user_skills=list(map(str, skills.split(","))),
-            user_interests=list(map(str, interests.split(","))),
-            user_career_goals=list(map(str, career_goals.split(","))),
+            user_skills=payload.user_skills,
+            user_interests=payload.user_interests,
+            user_career_goals=payload.user_career_goals,
         )
 
-        # 4) load historical vectors for K-Means
-        rows = load_recent_vectors(db, limit=500)
-        historical_students: list[StudentVector] = []
+        # ----------------------------
+        # 4. LOAD HISTORICAL DATA
+        # ----------------------------
+        rows = load_recent_vectors(db)
+        historical_students = []
+
         for r in rows:
             try:
                 feats = json.loads(r.features_json or "[]")
-                if isinstance(feats, list) and feats:
+                if feats:
                     historical_students.append(
                         StudentVector(
-                            user_id=int(r.user_id),
+                            user_id=r.user_id,
                             features=[float(x) for x in feats],
                         )
                     )
             except Exception:
                 continue
 
-        # 5) compute final recommendation
+        # ----------------------------
+        # 5. MAIN LOGIC (WITH AI)
+        # ----------------------------
         result = recommend_with_kmeans_and_cbf(
             user_id=payload.user_id,
             score=payload.score,
@@ -217,40 +225,52 @@ def build_router(SessionLocal):
             career_goals=career_goals,
             strand=strand,
             preferred_program=preferred_program,
-            behavior_score=0.0,
             historical_students=historical_students if len(historical_students) >= 10 else None,
             courses=courses if courses else None,
-            top_n_courses=10,
+            enable_ai_explanation=True,  # 🔥 important
         )
 
-        # make sure response always includes normalized preferred program
-        result["preferred_program"] = preferred_program
-
-        # =========================
-        # ✅ CLEAN TOP PROGRAMS
-        # =========================
+        # ----------------------------
+        # 6. DETERMINE DECISION BASIS
+        # ----------------------------
         scores = result.get("weighted_scores", {}) or {}
-        top_programs = sorted(scores, key=lambda k: scores[k], reverse=True)
-        
+        max_score = max(scores.values()) if scores else 0
 
-        # 6) upsert result
+        top_programs = [p for p, s in scores.items() if s == max_score]
+
+        if len(top_programs) == 1:
+            decision_basis = "weighted_score"
+        elif preferred_program in top_programs:
+            decision_basis = "preferred_program"
+        else:
+            decision_basis = "tie_breaker"
+
+        # ----------------------------
+        # 7. SAVE RESULT
+        # ----------------------------
         upsert_recommendation_result(
             db,
             user_id=payload.user_id,
             attempt_id=payload.attempt_id,
             program=result["recommended_program"],
-            confidence=int(result["confidence"]),
-            message=str(result["message"]),
-            percent_score=float(result["percent_score"]),
-            gwa=float(result["gwa"]),
-            rating=str(result["rating"]),
-            gwa_remarks=str(result["gwa_remarks"]),
+            confidence=result["confidence"],
+            message=result["message"],
+            percent_score=result["percent_score"],
+            gwa=result["gwa"],
+            rating=result["rating"],
+            gwa_remarks=result["gwa_remarks"],
             preferred_program=preferred_program,
             weighted_scores=result.get("weighted_scores"),
             profile_scores=result.get("profile_scores"),
             cluster_id=result.get("cluster_id", 0),
             top_programs=top_programs,
+            ai_explanation=result.get("ai_explanation", ""),
+            decision_basis=decision_basis,
         )
+
+        # attach missing fields to response
+        result["decision_basis"] = decision_basis
+        result["top_programs"] = top_programs
 
         return result
 

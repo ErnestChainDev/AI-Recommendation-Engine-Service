@@ -4,6 +4,11 @@ from sqlalchemy.exc import IntegrityError
 
 from .models import StudentFeatureVector, RecommendationResult
 
+
+# --------------------------------------------------------
+# FETCH HELPERS
+# --------------------------------------------------------
+
 def load_recent_vectors(db: Session, limit: int = 500):
     return (
         db.query(StudentFeatureVector)
@@ -12,6 +17,7 @@ def load_recent_vectors(db: Session, limit: int = 500):
         .all()
     )
 
+
 def get_latest_recommendation(db: Session, user_id: int):
     return (
         db.query(RecommendationResult)
@@ -19,6 +25,11 @@ def get_latest_recommendation(db: Session, user_id: int):
         .order_by(RecommendationResult.created_at.desc())
         .first()
     )
+
+
+# --------------------------------------------------------
+# STUDENT VECTOR UPSERT
+# --------------------------------------------------------
 
 def save_student_vector(
     db: Session,
@@ -39,6 +50,7 @@ def save_student_vector(
 
     def _apply(row: StudentFeatureVector):
         row.set_features(features)
+
         row.score = score
         row.total = total
         row.logic = logic
@@ -69,11 +81,30 @@ def save_student_vector(
         db.commit()
     except IntegrityError:
         db.rollback()
-        return save_student_vector(db, **locals())
+        # retry safely (no locals recursion bug)
+        return save_student_vector(
+            db=db,
+            user_id=user_id,
+            attempt_id=attempt_id,
+            features=features,
+            score=score,
+            total=total,
+            logic=logic,
+            programming=programming,
+            networking=networking,
+            design=design,
+            user_skills=user_skills,
+            user_interests=user_interests,
+            user_career_goals=user_career_goals,
+        )
 
     db.refresh(row)
     return row
 
+
+# --------------------------------------------------------
+# RECOMMENDATION UPSERT (UPDATED FOR XAI)
+# --------------------------------------------------------
 
 def upsert_recommendation_result(
     db: Session,
@@ -92,10 +123,14 @@ def upsert_recommendation_result(
     profile_scores: dict | None = None,
     cluster_id: int = 0,
     top_programs: list[str] | None = None,
+
+    # 🔥 NEW (XAI)
+    ai_explanation: str = "",
+    decision_basis: str = "weighted_score",
 ) -> RecommendationResult:
 
     def _apply(row: RecommendationResult):
-        row.program = program.upper()
+        row.program = (program or "").upper()
         row.confidence = confidence
         row.message = message
 
@@ -104,13 +139,19 @@ def upsert_recommendation_result(
         row.rating = rating
         row.gwa_remarks = gwa_remarks
 
-        row.preferred_program = preferred_program.upper()
+        row.preferred_program = (preferred_program or "").upper()
 
+        # JSON fields (use helpers ✅)
         row.set_weighted_scores(weighted_scores or {})
         row.set_profile_scores(profile_scores or {})
+        row.set_top_programs(top_programs or [])
 
+        # clustering
         row.cluster_id = cluster_id
-        row.top_programs_json = json.dumps(top_programs or [])
+
+        # 🔥 XAI fields
+        row.ai_explanation = ai_explanation or ""
+        row.decision_basis = decision_basis
 
     existing = db.query(RecommendationResult).filter(
         RecommendationResult.user_id == user_id,
@@ -131,7 +172,26 @@ def upsert_recommendation_result(
         db.commit()
     except IntegrityError:
         db.rollback()
-        return upsert_recommendation_result(db, **locals())
+        # retry safely (explicit args)
+        return upsert_recommendation_result(
+            db=db,
+            user_id=user_id,
+            attempt_id=attempt_id,
+            program=program,
+            confidence=confidence,
+            message=message,
+            percent_score=percent_score,
+            gwa=gwa,
+            rating=rating,
+            gwa_remarks=gwa_remarks,
+            preferred_program=preferred_program,
+            weighted_scores=weighted_scores,
+            profile_scores=profile_scores,
+            cluster_id=cluster_id,
+            top_programs=top_programs,
+            ai_explanation=ai_explanation,
+            decision_basis=decision_basis,
+        )
 
     db.refresh(row)
     return row

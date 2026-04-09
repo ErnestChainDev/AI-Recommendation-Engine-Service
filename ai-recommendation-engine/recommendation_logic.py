@@ -1,28 +1,150 @@
+"""
+recommendation_engine.py
+========================
+Hybrid Academic Program Recommendation System
+---------------------------------------------
+Combines K-Means Clustering, Content-Based Filtering (CBF),
+and a Weighted Scoring Formula to recommend IT-related academic
+programs (BSCS, BSIT, BSIS, BTVTED) based on quiz performance
+and student profile data.
+
+Explainable AI (XAI) integration via OpenRouter LLM produces
+human-readable, advisor-style explanations for each recommendation.
+
+Formula:
+    Final Score = (Quiz × 60%) + (Skills × 20%) + (Interests × 10%) + (Career Goals × 10%)
+
+Author  : [Your Name]
+Version : 2.0.0
+"""
+
+from __future__ import annotations
+
+import logging
 import math
+import os
 import random
 import re
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-# ----------------------------
-# Utilities: text + similarity
-# ----------------------------
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+WEIGHT_QUIZ: float = 0.60
+WEIGHT_SKILLS: float = 0.20
+WEIGHT_INTERESTS: float = 0.10
+WEIGHT_CAREER_GOALS: float = 0.10
 
 _TOKEN_RE = re.compile(r"[a-z0-9\-]+")
 
+# ---------------------------------------------------------------------------
+# Program Metadata
+# ---------------------------------------------------------------------------
+
+_PROGRAM_ALIASES: Dict[str, str] = {
+    "BSCS": "BSCS", "CS": "BSCS", "COMPUTER SCIENCE": "BSCS", "COMSCI": "BSCS",
+    "BSIT": "BSIT", "IT": "BSIT", "INFORMATION TECHNOLOGY": "BSIT",
+    "BSIS": "BSIS", "IS": "BSIS", "INFORMATION SYSTEMS": "BSIS",
+    "BTVTED": "BTVTED", "BTVTED-ICT": "BTVTED", "ICT": "BTVTED", "TVTED": "BTVTED",
+}
+
+PROGRAM_LABELS: Dict[str, str] = {
+    "BSCS": "BSCS (Computer Science)",
+    "BSIT": "BSIT (Information Technology)",
+    "BSIS": "BSIS (Information Systems)",
+    "BTVTED": "BTVTED ICT",
+}
+
+#: Maps each program to its defining interests and skills keywords.
+#: Used for profile-based alignment scoring.
+PROGRAM_MAPPING: Dict[str, Dict[str, List[str]]] = {
+    "BSCS": {
+        "interests": [
+            "algorithms", "artificial intelligence",
+            "software engineering", "data structures", "machine learning",
+        ],
+        "skills": [
+            "programming", "algorithm design", "logical thinking",
+            "debugging", "mathematical analysis",
+        ],
+    },
+    "BSIT": {
+        "interests": [
+            "web development", "network administration", "system integration",
+            "cybersecurity", "cloud computing",
+        ],
+        "skills": [
+            "web development", "network troubleshooting", "system administration",
+            "hardware setup", "cybersecurity basics",
+        ],
+    },
+    "BSIS": {
+        "interests": [
+            "business process analysis", "data analytics", "information management",
+            "enterprise systems", "project management",
+        ],
+        "skills": [
+            "data analysis", "documentation", "business communication",
+            "system planning", "critical thinking",
+        ],
+    },
+    "BTVTED": {
+        "interests": [
+            "technical skills development", "teaching", "industrial tools",
+            "curriculum design", "applied technologies",
+        ],
+        "skills": [
+            "technical teaching", "hands-on skills", "equipment handling",
+            "instructional planning", "practical problem solving",
+        ],
+    },
+}
+
+# ---------------------------------------------------------------------------
+# Utility Functions
+# ---------------------------------------------------------------------------
+
 
 def tokenize(text: str) -> List[str]:
+    """Lowercases and extracts alphanumeric tokens from *text*."""
     if not text:
         return []
     return _TOKEN_RE.findall(text.lower())
 
 
+def normalize_text_list(items: List[str]) -> List[str]:
+    """Returns a lowercase, stripped copy of *items*, excluding blank entries."""
+    return [i.lower().strip() for i in items if i and i.strip()]
+
+
+def normalize_program(raw: str) -> str:
+    """Resolves a program string to its canonical four-letter code."""
+    key = re.sub(r"\s+", " ", (raw or "").strip().upper())
+    return _PROGRAM_ALIASES.get(key, key)
+
+
+def program_label(program: str) -> str:
+    """Returns a human-readable label for a canonical program code."""
+    return PROGRAM_LABELS.get(normalize_program(program), normalize_program(program) or "Unknown Program")
+
+
 def cosine_sim_sparse(a: Dict[str, float], b: Dict[str, float]) -> float:
+    """Computes cosine similarity between two sparse TF-IDF vectors."""
     if not a or not b:
         return 0.0
-    dot = 0.0
-    for k, v in a.items():
-        dot += v * b.get(k, 0.0)
+    dot = sum(v * b.get(k, 0.0) for k, v in a.items())
     na = math.sqrt(sum(v * v for v in a.values()))
     nb = math.sqrt(sum(v * v for v in b.values()))
     if na == 0.0 or nb == 0.0:
@@ -31,128 +153,14 @@ def cosine_sim_sparse(a: Dict[str, float], b: Dict[str, float]) -> float:
 
 
 def l2_distance(a: List[float], b: List[float]) -> float:
+    """Computes Euclidean (L2) distance between two equal-length vectors."""
     n = min(len(a), len(b))
     return math.sqrt(sum((a[i] - b[i]) ** 2 for i in range(n)))
 
 
-# ----------------------------
-# Program normalization
-# ----------------------------
-
-_PROGRAM_ALIASES: Dict[str, str] = {
-    "BSCS": "BSCS",
-    "CS": "BSCS",
-    "COMPUTER SCIENCE": "BSCS",
-    "COMSCI": "BSCS",
-    "BSIT": "BSIT",
-    "IT": "BSIT",
-    "INFORMATION TECHNOLOGY": "BSIT",
-    "BSIS": "BSIS",
-    "IS": "BSIS",
-    "INFORMATION SYSTEMS": "BSIS",
-    "BTVTED": "BTVTED",
-    "BTVTED-ICT": "BTVTED",
-    "ICT": "BTVTED",
-    "TVTED": "BTVTED",
-}
-
-
-def normalize_program(p: str) -> str:
-    s = (p or "").strip().upper()
-    s = re.sub(r"\s+", " ", s)
-    return _PROGRAM_ALIASES.get(s, s)
-
-
-def program_label(program: str) -> str:
-    p = normalize_program(program)
-    labels = {
-        "BSCS": "BSCS (Computer Science)",
-        "BSIT": "BSIT (Information Technology)",
-        "BSIS": "BSIS (Information Systems)",
-        "BTVTED": "BTVTED ICT",
-    }
-    return labels.get(p, p or "Unknown Program")
-
-
-# ----------------------------
-# Balanced Profile Mapping (5 items each)
-# ----------------------------
-
-PROGRAM_MAPPING: Dict[str, Dict[str, List[str]]] = {
-    "BSCS": {
-        "interests": [
-            "algorithms",
-            "artificial intelligence",
-            "software engineering",
-            "data structures",
-            "machine learning",
-        ],
-        "skills": [
-            "programming",
-            "algorithm design",
-            "logical thinking",
-            "debugging",
-            "mathematical analysis",
-        ],
-    },
-    "BSIT": {
-        "interests": [
-            "web development",
-            "network administration",
-            "system integration",
-            "cybersecurity",
-            "cloud computing",
-        ],
-        "skills": [
-            "web development",
-            "network troubleshooting",
-            "system administration",
-            "hardware setup",
-            "cybersecurity basics",
-        ],
-    },
-    "BSIS": {
-        "interests": [
-            "business process analysis",
-            "data analytics",
-            "information management",
-            "enterprise systems",
-            "project management",
-        ],
-        "skills": [
-            "data analysis",
-            "documentation",
-            "business communication",
-            "system planning",
-            "critical thinking",
-        ],
-    },
-    "BTVTED": {
-        "interests": [
-            "technical skills development",
-            "teaching",
-            "industrial tools",
-            "curriculum design",
-            "applied technologies",
-        ],
-        "skills": [
-            "technical teaching",
-            "hands-on skills",
-            "equipment handling",
-            "instructional planning",
-            "practical problem solving",
-        ],
-    },
-}
-
-
-# ----------------------------
-# Profile Scoring: Skills + Interests + Career Goals
-# ----------------------------
-
-def normalize_text_list(items: List[str]) -> List[str]:
-    """Lowercase + strip all items."""
-    return [i.lower().strip() for i in items if i and i.strip()]
+# ---------------------------------------------------------------------------
+# Profile Scoring
+# ---------------------------------------------------------------------------
 
 
 def score_profile_against_mapping(
@@ -160,24 +168,24 @@ def score_profile_against_mapping(
     mapping_items: List[str],
 ) -> float:
     """
-    Returns a score between 0.0 and 1.0 representing how many
-    of the user's items match the program's mapping list.
-    Uses partial/token-level matching for flexibility.
+    Measures how many of the student's profile items overlap with a
+    program's keyword list, using token-level partial matching.
+
+    Returns:
+        float: Overlap ratio in [0.0, 1.0], normalised over mapping size.
     """
     if not user_items or not mapping_items:
         return 0.0
 
-    user_tokens_list = [set(tokenize(item)) for item in user_items]
-    mapping_tokens_list = [set(tokenize(item)) for item in mapping_items]
+    user_token_sets = [set(tokenize(item)) for item in user_items]
+    mapping_token_sets = [set(tokenize(item)) for item in mapping_items]
 
     matched = 0
-    for u_tokens in user_tokens_list:
-        for m_tokens in mapping_tokens_list:
-            if u_tokens & m_tokens:  # at least one token overlaps
-                matched += 1
-                break  # count each user item only once
+    for u_tokens in user_token_sets:
+        if any(u_tokens & m_tokens for m_tokens in mapping_token_sets):
+            matched += 1
 
-    return matched / len(mapping_items)  # normalize against mapping size (5)
+    return matched / len(mapping_items)
 
 
 def score_career_goals_against_mapping(
@@ -185,24 +193,24 @@ def score_career_goals_against_mapping(
     program: str,
 ) -> float:
     """
-    Career goals are matched against both interests and skills
-    of the program mapping since goals can overlap either domain.
+    Scores career goals against the combined interests and skills of a
+    program, since goals can overlap either domain.
+
+    Returns:
+        float: Match ratio in [0.0, 1.0].
     """
     mapping = PROGRAM_MAPPING.get(program, {})
     combined = mapping.get("interests", []) + mapping.get("skills", [])
     if not combined:
         return 0.0
 
-    user_tokens_list = [set(tokenize(g)) for g in career_goals if g.strip()]
-    matched = 0
+    user_token_sets = [set(tokenize(g)) for g in career_goals if g.strip()]
     combined_token_sets = [set(tokenize(item)) for item in combined]
 
-    for u_tokens in user_tokens_list:
-        for m_tokens in combined_token_sets:
-            if u_tokens & m_tokens:
-                matched += 1
-                break
-
+    matched = sum(
+        1 for u_tokens in user_token_sets
+        if any(u_tokens & m for m in combined_token_sets)
+    )
     return min(1.0, matched / max(1, len(combined_token_sets)))
 
 
@@ -212,36 +220,40 @@ def compute_profile_scores(
     user_career_goals: List[str],
 ) -> Dict[str, Dict[str, float]]:
     """
-    Returns per-program breakdown:
-      { "BSCS": { "skills": 0.8, "interests": 0.6, "career_goals": 0.4 }, ... }
+    Computes per-program profile alignment scores across three dimensions:
+    skills, interests, and career goals.
+
+    Returns:
+        Dict mapping each program code to a sub-score dictionary, e.g.::
+
+            {
+                "BSCS": {"skills": 0.80, "interests": 0.60, "career_goals": 0.40},
+                ...
+            }
     """
-    result: Dict[str, Dict[str, float]] = {}
     norm_skills = normalize_text_list(user_skills)
     norm_interests = normalize_text_list(user_interests)
     norm_goals = normalize_text_list(user_career_goals)
 
-    for program, mapping in PROGRAM_MAPPING.items():
-        skills_score = score_profile_against_mapping(norm_skills, mapping.get("skills", []))
-        interests_score = score_profile_against_mapping(norm_interests, mapping.get("interests", []))
-        career_score = score_career_goals_against_mapping(norm_goals, program)
-        result[program] = {
-            "skills": round(skills_score, 4),
-            "interests": round(interests_score, 4),
-            "career_goals": round(career_score, 4),
+    return {
+        program: {
+            "skills": round(
+                score_profile_against_mapping(norm_skills, mapping.get("skills", [])), 4
+            ),
+            "interests": round(
+                score_profile_against_mapping(norm_interests, mapping.get("interests", [])), 4
+            ),
+            "career_goals": round(
+                score_career_goals_against_mapping(norm_goals, program), 4
+            ),
         }
+        for program, mapping in PROGRAM_MAPPING.items()
+    }
 
-    return result
 
-
-# ----------------------------
-# Weighted Recommendation Formula
-# Recommendation = (Quiz × 60%) + (Skills × 20%) + (Interests × 10%) + (Career Goals × 10%)
-# ----------------------------
-
-WEIGHT_QUIZ = 0.60
-WEIGHT_SKILLS = 0.20
-WEIGHT_INTERESTS = 0.10
-WEIGHT_CAREER_GOALS = 0.10
+# ---------------------------------------------------------------------------
+# Weighted Scoring
+# ---------------------------------------------------------------------------
 
 
 def compute_weighted_scores(
@@ -254,71 +266,95 @@ def compute_weighted_scores(
     profile_scores: Dict[str, Dict[str, float]],
 ) -> Dict[str, float]:
     """
-    Computes the final weighted score per program.
+    Computes the final weighted recommendation score per program.
 
-    Quiz component: uses per-category subscores mapped to each program.
-      BSCS  -> programming
-      BSIT  -> networking
-      BSIS  -> logic
-      BTVTED-> design
+    Quiz sub-score mapping (category → program):
+        - Logic       → BSIS
+        - Programming → BSCS
+        - Networking  → BSIT
+        - Design      → BTVTED
 
-    Profile components (skills, interests, career_goals) come from profile_scores.
+    The quiz component blends the overall percentage (50%) with the
+    program-specific sub-score (50%) to reward both breadth and depth.
+
+    Returns:
+        Dict mapping each program code to a score in [0.0, 1.0].
     """
     quiz_total = max(1, quiz_total)
-    overall_pct = (quiz_score / quiz_total)  # 0.0 – 1.0
+    overall_pct = quiz_score / quiz_total
 
-    # Per-program quiz sub-score (normalized to 0–1)
-    program_quiz_map = {
-        "BSCS": (programming / quiz_total),
-        "BSIT": (networking / quiz_total),
-        "BSIS": (logic / quiz_total),
-        "BTVTED": (design / quiz_total),
+    program_quiz_map: Dict[str, float] = {
+        "BSCS": programming / quiz_total,
+        "BSIT": networking / quiz_total,
+        "BSIS": logic / quiz_total,
+        "BTVTED": design / quiz_total,
     }
 
     weighted: Dict[str, float] = {}
     for program in PROGRAM_MAPPING:
-        # Blend overall quiz pct (50%) + category sub-score (50%) for quiz component
         quiz_component = (overall_pct * 0.5) + (program_quiz_map.get(program, 0.0) * 0.5)
-
-        p_scores = profile_scores.get(program, {})
-        skills_component = p_scores.get("skills", 0.0)
-        interests_component = p_scores.get("interests", 0.0)
-        career_component = p_scores.get("career_goals", 0.0)
-
+        p = profile_scores.get(program, {})
         final = (
-            (quiz_component * WEIGHT_QUIZ)
-            + (skills_component * WEIGHT_SKILLS)
-            + (interests_component * WEIGHT_INTERESTS)
-            + (career_component * WEIGHT_CAREER_GOALS)
+            quiz_component * WEIGHT_QUIZ
+            + p.get("skills", 0.0) * WEIGHT_SKILLS
+            + p.get("interests", 0.0) * WEIGHT_INTERESTS
+            + p.get("career_goals", 0.0) * WEIGHT_CAREER_GOALS
         )
         weighted[program] = round(final, 6)
 
     return weighted
 
 
-def pick_recommended_program(weighted_scores: Dict[str, float]) -> str:
-    """Returns the program with the highest weighted score."""
+def pick_recommended_program(
+    weighted_scores: Dict[str, float],
+    preferred_program: str = "",
+) -> str:
+    """
+    Selects the recommended program from weighted scores.
+
+    Tie-breaking priority:
+        1. Highest weighted score
+        2. Student's preferred program (if tied)
+        3. First alphabetical program (deterministic fallback)
+    """
     if not weighted_scores:
         return "BSIT"
-    return max(weighted_scores, key=lambda p: weighted_scores[p])
+
+    max_score = max(weighted_scores.values())
+    top_programs = [p for p, s in weighted_scores.items() if s == max_score]
+
+    if len(top_programs) == 1:
+        return top_programs[0]
+
+    preferred = normalize_program(preferred_program)
+    if preferred and preferred in top_programs:
+        return preferred
+
+    return top_programs[0]
 
 
-def compute_confidence(weighted_scores: Dict[str, float], recommended: str) -> int:
+def compute_confidence(
+    weighted_scores: Dict[str, float],
+    recommended: str,
+) -> int:
     """
-    Confidence = recommended_score / max_possible * 100, clamped 50–97.
-    Adjusted by margin over second-best.
+    Estimates recommendation confidence as a percentage in [50, 97].
+
+    Confidence is derived from the recommended program's weighted score,
+    then adjusted based on its margin over the second-best program.
+    A large margin boosts confidence; a small margin reduces it.
+
+    Returns:
+        int: Confidence percentage.
     """
     if not weighted_scores:
         return 50
 
     sorted_scores = sorted(weighted_scores.values(), reverse=True)
-    top = sorted_scores[0]
-    second = sorted_scores[1] if len(sorted_scores) > 1 else 0.0
-
+    top, second = sorted_scores[0], (sorted_scores[1] if len(sorted_scores) > 1 else 0.0)
     margin = top - second
     raw_conf = int(min(97, max(50, top * 100)))
 
-    # Boost confidence if margin is large
     if margin >= 0.10:
         raw_conf = min(97, raw_conf + 5)
     elif margin <= 0.02:
@@ -327,12 +363,63 @@ def compute_confidence(weighted_scores: Dict[str, float], recommended: str) -> i
     return raw_conf
 
 
-# ----------------------------
+# ---------------------------------------------------------------------------
+# GWA Computation
+# ---------------------------------------------------------------------------
+
+
+def compute_gwa_and_rating(score: int, total: int) -> Tuple[float, str, str, float]:
+    """
+    Converts a raw quiz score to an estimated GWA and descriptive rating.
+
+    Returns:
+        Tuple of (gwa, rating_label, remarks, percent_score).
+    """
+    total = max(1, total)
+    percent = (score / total) * 100.0
+
+    gwa_table = [
+        (96, 1.00), (94, 1.25), (92, 1.50), (89, 1.75), (87, 2.00),
+        (84, 2.25), (82, 2.50), (79, 2.75), (75, 3.00),
+    ]
+    gwa = 5.00
+    for threshold, value in gwa_table:
+        if percent >= threshold:
+            gwa = value
+            break
+
+    rating_map = [
+        (1.50, "Excellent",
+         "Your overall performance is outstanding, demonstrating a very strong academic foundation."),
+        (2.25, "Very Good",
+         "Your performance is commendable, showing a solid understanding of the subject matter."),
+        (2.75, "Good",
+         "Your performance is satisfactory, with evident strengths, though some areas require further improvement."),
+        (3.00, "Satisfactory (Pass)",
+         "You have met the minimum requirements. Focusing on weaker areas is recommended "
+         "to improve your overall performance."),
+        (float("inf"), "Needs Improvement",
+         "Your performance indicates a need for improvement. Consistent practice and review "
+         "are highly recommended to enhance your understanding."),
+    ]
+
+    rating, remarks = "Needs Improvement", ""
+    for threshold, r, rem in rating_map:
+        if gwa <= threshold:
+            rating, remarks = r, rem
+            break
+
+    return round(gwa, 2), rating, remarks, round(percent, 1)
+
+
+# ---------------------------------------------------------------------------
 # Content-Based Filtering (CBF)
-# ----------------------------
+# ---------------------------------------------------------------------------
+
 
 @dataclass
 class CourseItem:
+    """Represents a single academic course for CBF recommendation."""
     id: int
     code: str
     title: str
@@ -342,53 +429,59 @@ class CourseItem:
     tags: str
 
     def as_text(self) -> str:
+        """Concatenates all course fields into a single searchable string."""
         return f"{self.code} {self.title} {self.description} {self.program} {self.level} {self.tags}"
 
 
 class CBFRecommender:
-    def __init__(self):
+    """
+    Content-Based Filtering recommender using TF-IDF vectorisation
+    and cosine similarity for course-to-student matching.
+    """
+
+    def __init__(self) -> None:
         self._idf: Dict[str, float] = {}
         self._course_vecs: Dict[int, Dict[str, float]] = {}
-        self._fitted = False
+        self._fitted: bool = False
 
     def fit(self, courses: List[CourseItem]) -> None:
+        """Builds the IDF index and TF-IDF vectors for all courses."""
         df: Dict[str, int] = {}
         docs_tokens: Dict[int, List[str]] = {}
 
-        for c in courses:
-            toks = tokenize(c.as_text())
-            docs_tokens[c.id] = toks
-            for t in set(toks):
-                df[t] = df.get(t, 0) + 1
+        for course in courses:
+            tokens = tokenize(course.as_text())
+            docs_tokens[course.id] = tokens
+            for token in set(tokens):
+                df[token] = df.get(token, 0) + 1
 
         n_docs = max(1, len(courses))
         self._idf = {
-            t: math.log((n_docs + 1) / (df_t + 1)) + 1.0
-            for t, df_t in df.items()
+            t: math.log((n_docs + 1) / (cnt + 1)) + 1.0
+            for t, cnt in df.items()
         }
 
         self._course_vecs = {}
-        for c in courses:
-            toks = docs_tokens[c.id]
+        for course in courses:
             tf: Dict[str, int] = {}
-            for t in toks:
-                tf[t] = tf.get(t, 0) + 1
-            vec: Dict[str, float] = {}
-            for t, cnt in tf.items():
-                vec[t] = (1.0 + math.log(cnt)) * self._idf.get(t, 0.0)
-            self._course_vecs[c.id] = vec
+            for token in docs_tokens[course.id]:
+                tf[token] = tf.get(token, 0) + 1
+            self._course_vecs[course.id] = {
+                t: (1.0 + math.log(cnt)) * self._idf.get(t, 0.0)
+                for t, cnt in tf.items()
+            }
 
         self._fitted = True
 
     def _vectorize_query(self, text: str) -> Dict[str, float]:
-        toks = tokenize(text)
+        """Converts a free-text query to a TF-IDF vector using the fitted IDF."""
         tf: Dict[str, int] = {}
-        for t in toks:
-            tf[t] = tf.get(t, 0) + 1
-        vec: Dict[str, float] = {}
-        for t, cnt in tf.items():
-            vec[t] = (1.0 + math.log(cnt)) * self._idf.get(t, 0.0)
-        return vec
+        for token in tokenize(text):
+            tf[token] = tf.get(token, 0) + 1
+        return {
+            t: (1.0 + math.log(cnt)) * self._idf.get(t, 0.0)
+            for t, cnt in tf.items()
+        }
 
     def recommend(
         self,
@@ -396,77 +489,79 @@ class CBFRecommender:
         courses: List[CourseItem],
         top_n: int = 10,
         program_filter: Optional[str] = None,
-    ) -> List[Dict]:
+    ) -> List[Dict[str, Any]]:
+        """
+        Returns the top-N courses most similar to the student profile text,
+        optionally filtered to a specific program.
+        """
         if not courses:
             return []
         if not self._fitted:
             self.fit(courses)
 
-        qv = self._vectorize_query(student_text)
+        query_vec = self._vectorize_query(student_text)
         pf = normalize_program(program_filter) if program_filter else None
-
-        scored: List[Tuple[int, float]] = []
-        for c in courses:
-            cp = normalize_program(c.program)
-            if pf and cp != pf:
-                continue
-            cv = self._course_vecs.get(c.id)
-            if not cv:
-                continue
-            s = cosine_sim_sparse(qv, cv)
-            scored.append((c.id, s))
-
-        scored.sort(key=lambda x: x[1], reverse=True)
-        top = scored[: max(1, top_n)]
-
         by_id = {c.id: c for c in courses}
+
+        scored: List[Tuple[int, float]] = [
+            (c.id, cosine_sim_sparse(query_vec, self._course_vecs[c.id]))
+            for c in courses
+            if (not pf or normalize_program(c.program) == pf) and c.id in self._course_vecs
+        ]
+        scored.sort(key=lambda x: x[1], reverse=True)
+
         return [
             {
                 "course_id": cid,
                 "code": by_id[cid].code,
                 "title": by_id[cid].title,
                 "program": normalize_program(by_id[cid].program),
-                "score": round(score, 6),
+                "score": round(sim, 6),
             }
-            for cid, score in top
+            for cid, sim in scored[:max(1, top_n)]
         ]
 
 
-# ----------------------------
+# ---------------------------------------------------------------------------
 # K-Means Clustering
-# ----------------------------
+# ---------------------------------------------------------------------------
+
 
 @dataclass
 class StudentVector:
+    """Stores a student's feature vector for K-Means clustering."""
     user_id: int
     features: List[float]
 
 
 class KMeansClusterer:
-    def __init__(self, k: int = 4, max_iter: int = 50, seed: int = 42):
+    """
+    Lightweight K-Means clustering implementation for grouping students
+    by academic performance and interest profile.
+    """
+
+    def __init__(self, k: int = 4, max_iter: int = 50, seed: int = 42) -> None:
         self.k = k
         self.max_iter = max_iter
         self.seed = seed
         self.centroids: List[List[float]] = []
-        self._fitted = False
-        self._dim = 0
+        self._fitted: bool = False
+        self._dim: int = 0
 
     def fit(self, data: List[StudentVector]) -> None:
+        """Fits the clusterer to a list of student feature vectors."""
         if not data:
-            self._reset()
-            return
+            return self._reset()
 
         random.seed(self.seed)
         points = [sv.features for sv in data if sv.features]
         if not points:
-            self._reset()
-            return
+            return self._reset()
 
         dim = len(points[0])
         points = [p for p in points if len(p) == dim]
         if not points:
-            self._reset()
-            return
+            return self._reset()
 
         self._dim = dim
         init_k = min(self.k, len(points))
@@ -477,15 +572,13 @@ class KMeansClusterer:
         for _ in range(self.max_iter):
             clusters: List[List[List[float]]] = [[] for _ in range(self.k)]
             for p in points:
-                idx = self._nearest_centroid_index(p)
-                clusters[idx].append(p)
+                clusters[self._nearest_centroid_index(p)].append(p)
 
-            new_centroids: List[List[float]] = []
-            for i in range(self.k):
-                if not clusters[i]:
-                    new_centroids.append(points[random.randint(0, len(points) - 1)][:])
-                else:
-                    new_centroids.append(self._mean_vector(clusters[i]))
+            new_centroids = [
+                self._mean_vector(cluster) if cluster
+                else points[random.randint(0, len(points) - 1)][:]
+                for cluster in clusters
+            ]
 
             shift = sum(l2_distance(a, b) for a, b in zip(self.centroids, new_centroids))
             self.centroids = new_centroids
@@ -494,41 +587,31 @@ class KMeansClusterer:
 
         self._fitted = True
 
-    def _reset(self):
-        self.centroids = []
-        self._fitted = False
-        self._dim = 0
-
     def predict(self, features: List[float]) -> int:
+        """Returns the cluster index for a given feature vector."""
         if not self._fitted or not self.centroids or not features:
             return 0
         if self._dim and len(features) != self._dim:
             return 0
         return self._nearest_centroid_index(features)
 
-    def _nearest_centroid_index(self, p: List[float]) -> int:
-        best_i, best_d = 0, float("inf")
-        for i, c in enumerate(self.centroids):
-            d = l2_distance(p, c)
-            if d < best_d:
-                best_d = d
-                best_i = i
-        return best_i
+    def _reset(self) -> None:
+        self.centroids, self._fitted, self._dim = [], False, 0
+
+    def _nearest_centroid_index(self, point: List[float]) -> int:
+        return min(range(len(self.centroids)), key=lambda i: l2_distance(point, self.centroids[i]))
 
     @staticmethod
     def _mean_vector(points: List[List[float]]) -> List[float]:
         dim = len(points[0])
-        out = [0.0] * dim
-        for p in points:
-            for j in range(dim):
-                out[j] += p[j]
-        n = float(len(points))
-        return [v / n for v in out]
+        out = [sum(p[j] for p in points) / len(points) for j in range(dim)]
+        return out
 
 
-# ----------------------------
+# ---------------------------------------------------------------------------
 # Feature Vector Builder
-# ----------------------------
+# ---------------------------------------------------------------------------
+
 
 def build_student_feature_vector(
     score: int,
@@ -540,117 +623,83 @@ def build_student_feature_vector(
     interests_text: str = "",
     behavior_score: float = 0.0,
 ) -> List[float]:
+    """
+    Constructs a 7-dimensional numeric feature vector representing a student's
+    academic profile for use in K-Means clustering.
+
+    Dimensions: [overall%, logic%, programming%, networking%, design%, interest_token_count, behavior_score]
+    """
     total = max(1, total)
-    overall = (score / total) * 100.0
-    logic_pct = (logic / total) * 100.0
-    prog_pct = (programming / total) * 100.0
-    net_pct = (networking / total) * 100.0
-    des_pct = (design / total) * 100.0
-    interests_len = float(len(tokenize(interests_text)))
-    return [overall, logic_pct, prog_pct, net_pct, des_pct, interests_len, float(behavior_score)]
+    return [
+        (score / total) * 100.0,
+        (logic / total) * 100.0,
+        (programming / total) * 100.0,
+        (networking / total) * 100.0,
+        (design / total) * 100.0,
+        float(len(tokenize(interests_text))),
+        float(behavior_score),
+    ]
 
 
-# ----------------------------
-# GWA + Rating
-# ----------------------------
-
-def compute_gwa_and_rating(score: int, total: int) -> Tuple[float, str, str, float]:
-    total = max(1, total)
-    percent = (score / total) * 100.0
-
-    if percent >= 96:
-        gwa = 1.00
-    elif percent >= 94:
-        gwa = 1.25
-    elif percent >= 92:
-        gwa = 1.50
-    elif percent >= 89:
-        gwa = 1.75
-    elif percent >= 87:
-        gwa = 2.00
-    elif percent >= 84:
-        gwa = 2.25
-    elif percent >= 82:
-        gwa = 2.50
-    elif percent >= 79:
-        gwa = 2.75
-    elif percent >= 75:
-        gwa = 3.00
-    else:
-        gwa = 5.00
-
-    if gwa <= 1.50:
-        rating = "Excellent"
-        remarks = "Your overall performance is outstanding, demonstrating a very strong academic foundation."
-    elif gwa <= 2.25:
-        rating = "Very Good"
-        remarks = "Your performance is commendable, showing a solid understanding of the subject matter."
-    elif gwa <= 2.75:
-        rating = "Good"
-        remarks = "Your performance is satisfactory, with evident strengths, though there are areas that require further improvement."
-    elif gwa <= 3.00:
-        rating = "Satisfactory (Pass)"
-        remarks = "You have met the minimum requirements. However, focusing on weaker areas is recommended to improve your overall performance."
-    else:
-        rating = "Needs Improvement"
-        remarks = "Your performance indicates a need for improvement. Consistent practice and review are highly recommended to enhance your understanding."
-
-    return round(gwa, 2), rating, remarks, round(percent, 1)
+# ---------------------------------------------------------------------------
+# Explainability Builders (Rule-Based)
+# ---------------------------------------------------------------------------
 
 
-# ----------------------------
-# Explainable Messages
-# ----------------------------
-
-def build_preference_aware_program_message(
-    *,
-    preferred_program: str = "",
-    recommended_program: str,
+def build_program_rationale(
+    program: str,
     logic: int,
     programming: int,
     networking: int,
     design: int,
-    confidence: int,
-    percent_score: float,
-    weighted_scores: Optional[Dict[str, float]] = None,
+    score: int,
+    total: int,
     profile_scores: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> str:
+    """
+    Constructs a structured, human-readable rationale for the recommended
+    program based on quiz sub-scores and profile alignment.
+    """
+    pct = (score / max(1, total)) * 100.0
+    p = normalize_program(program)
 
-    recommended = normalize_program(recommended_program)
-
-    # Identify strongest quiz area
-    strengths = {
-        "BSIS": logic,
-        "BSCS": programming,
-        "BSIT": networking,
-        "BTVTED": design,
+    explanations: Dict[str, str] = {
+        "BSIS": (
+            "You demonstrated stronger logical thinking and analytical skills. "
+            "Information Systems aligns with this profile because it emphasises "
+            "systems analysis, database management, business processes, and "
+            "information architecture."
+        ),
+        "BSCS": (
+            "You performed best in programming-related items. Computer Science is "
+            "a strong fit because it focuses on algorithm design, software engineering, "
+            "mathematical foundations, and computational problem-solving."
+        ),
+        "BSIT": (
+            "Your performance was strongest in networking, web development, and "
+            "technical infrastructure areas. Information Technology is well-suited "
+            "because it covers networking, system administration, cybersecurity, "
+            "and applied IT solutions."
+        ),
+        "BTVTED": (
+            "You performed strongest in design and creative technology-related areas. "
+            "BTVTED ICT is appropriate because it integrates multimedia production, "
+            "instructional design, digital tools, and technology-supported education."
+        ),
     }
 
-    strongest_area_map = {
-        "BSCS": "programming",
-        "BSIT": "networking",
-        "BSIS": "analytical thinking",
-        "BTVTED": "design and technical skills",
-    }
+    profile_note = ""
+    if profile_scores and (ps := profile_scores.get(p)):
+        profile_note = (
+            f" Profile alignment — Skills: {int(ps.get('skills', 0) * 100)}%, "
+            f"Interests: {int(ps.get('interests', 0) * 100)}%, "
+            f"Career Goals: {int(ps.get('career_goals', 0) * 100)}%."
+        )
 
-    strongest_area = strongest_area_map.get(recommended, "your strengths")
-
-    # Profile alignment
-    skills_pct = 0
-    interests_pct = 0
-    goals_pct = 0
-
-    if profile_scores:
-        ps = profile_scores.get(recommended, {})
-        skills_pct = int(ps.get("skills", 0) * 100)
-        interests_pct = int(ps.get("interests", 0) * 100)
-        goals_pct = int(ps.get("career_goals", 0) * 100)
-
-    # 🔥 FINAL SHORT EXPLANATION
     return (
-        f"You performed strongly in {strongest_area}, and your profile shows "
-        f"high alignment in skills ({skills_pct}%), interests ({interests_pct}%), "
-        f"and career goals ({goals_pct}%) related to {program_label(recommended)}."
+        f"{explanations.get(p, 'This program best matches your strongest academic area.')} "
+        f"(Logic={logic}, Programming={programming}, Networking={networking}, "
+        f"Design={design}, Score={score}/{total} [{pct:.1f}%]).{profile_note}"
     )
 
 
@@ -659,16 +708,18 @@ def build_weighted_score_breakdown(
     profile_scores: Dict[str, Dict[str, float]],
     recommended: str,
 ) -> str:
-    """Generates a readable breakdown of scores per program."""
-    lines = ["📐 Weighted Score Breakdown (Formula: Quiz×60% + Skills×20% + Interests×10% + Goals×10%):"]
-    sorted_programs = sorted(weighted_scores.items(), key=lambda x: x[1], reverse=True)
-
-    for prog, ws in sorted_programs:
+    """Returns a formatted table of weighted scores per program for transparency."""
+    lines = [
+        "📐 Weighted Score Breakdown",
+        "   Formula: Quiz × 60% | Skills × 20% | Interests × 10% | Goals × 10%",
+        "   " + "─" * 65,
+    ]
+    for prog, ws in sorted(weighted_scores.items(), key=lambda x: x[1], reverse=True):
         ps = profile_scores.get(prog, {})
-        marker = " ✅ Recommended" if normalize_program(prog) == normalize_program(recommended) else ""
+        marker = "  ✅ Recommended" if normalize_program(prog) == normalize_program(recommended) else ""
         lines.append(
-            f"  {program_label(prog)}: {ws * 100:.1f}%"
-            f" (Skills={ps.get('skills', 0) * 100:.0f}%,"
+            f"   {program_label(prog):<38} {ws * 100:5.1f}%"
+            f"  (Skills={ps.get('skills', 0) * 100:.0f}%,"
             f" Interests={ps.get('interests', 0) * 100:.0f}%,"
             f" Goals={ps.get('career_goals', 0) * 100:.0f}%)"
             f"{marker}"
@@ -693,58 +744,73 @@ def build_explainable_message(
     program_rationale: str,
     weighted_scores: Optional[Dict[str, float]] = None,
     profile_scores: Optional[Dict[str, Dict[str, float]]] = None,
+    ai_explanation: str = "",
 ) -> str:
+    """
+    Assembles the complete, human-readable recommendation report.
+    Optionally includes an AI-generated advisory explanation.
+    """
     pct = (score / max(1, total)) * 100.0
-
-    preference_message = build_preference_aware_program_message(
-        preferred_program=preferred_program,
-        recommended_program=recommended_program,
-        logic=logic,
-        programming=programming,
-        networking=networking,
-        design=design,
-        confidence=confidence,
-        percent_score=pct,
-        weighted_scores=weighted_scores,
-        profile_scores=profile_scores,
-    )
-
-    strengths_summary = (
-        f"📊 Quiz Strength Breakdown: Logic={logic}, Programming={programming}, "
-        f"Networking={networking}, Design={design}."
-    )
 
     preferred_text = (
         f"Preferred Program  : {program_label(preferred_program)}\n"
-        if preferred_program
-        else "Preferred Program  : Not specified\n"
+        if preferred_program else "Preferred Program  : Not specified\n"
     )
 
-    breakdown_text = ""
-    if weighted_scores and profile_scores:
-        breakdown_text = (
-            "\n\n"
-            + build_weighted_score_breakdown(weighted_scores, profile_scores, recommended_program)
+    # Highlight strongest quiz area
+    strongest_area = max(
+        [("Logic", logic), ("Programming", programming),
+         ("Networking", networking), ("Design", design)],
+        key=lambda x: x[1],
+    )[0]
+
+    profile_summary = ""
+    if profile_scores and (ps := profile_scores.get(normalize_program(recommended_program))):
+        profile_summary = (
+            f"Profile Alignment  : Skills {int(ps.get('skills', 0) * 100)}% | "
+            f"Interests {int(ps.get('interests', 0) * 100)}% | "
+            f"Career Goals {int(ps.get('career_goals', 0) * 100)}%\n"
         )
 
+    breakdown_text = (
+        "\n\n" + build_weighted_score_breakdown(weighted_scores, profile_scores, recommended_program)
+        if weighted_scores and profile_scores else ""
+    )
+
+    ai_section = (
+        f"\n\n🤖 AI Advisory Explanation:\n{ai_explanation}"
+        if ai_explanation else ""
+    )
+
     return (
-        f"📊 Quiz Rating      : {rating} (Estimated GWA: {gwa})\n"
-        f"Score              : {score}/{total} ({pct:.1f}%)\n"
-        f"Remarks            : {gwa_remarks}\n"
-        f"{preferred_text}"
-        f"Recommended Program: {program_label(recommended_program)}\n"
-        f"\n🎯 Recommendation Insight:\n"
-        f"{preference_message}\n"
-        f"\n📌 Program Basis:\n"
-        f"{program_rationale}\n"
-        f"\n{strengths_summary}"
+        f"{'=' * 60}\n"
+        f"       ACADEMIC PROGRAM RECOMMENDATION REPORT\n"
+        f"{'=' * 60}\n\n"
+        f"📊 Assessment Summary\n"
+        f"   Rating             : {rating} (Est. GWA: {gwa})\n"
+        f"   Score              : {score}/{total} ({pct:.1f}%)\n"
+        f"   Strongest Area     : {strongest_area}\n"
+        f"   Remarks            : {gwa_remarks}\n\n"
+        f"🎓 Recommendation\n"
+        f"   {preferred_text}"
+        f"   Recommended Program: {program_label(recommended_program)}\n"
+        f"   Confidence         : {confidence}%\n"
+        f"   {profile_summary}\n"
+        f"📋 Strengths Summary\n"
+        f"   Logic={logic} | Programming={programming} | "
+        f"Networking={networking} | Design={design}\n\n"
+        f"📌 Program Rationale\n"
+        f"   {program_rationale}"
         f"{breakdown_text}"
+        f"{ai_section}\n"
+        f"{'=' * 60}"
     )
 
 
-# ----------------------------
-# Student Query Text for CBF
-# ----------------------------
+# ---------------------------------------------------------------------------
+# Student Query Text (for CBF)
+# ---------------------------------------------------------------------------
+
 
 def build_student_query_text(
     interests: str,
@@ -757,107 +823,211 @@ def build_student_query_text(
     user_interests_list: Optional[List[str]] = None,
     user_career_goals_list: Optional[List[str]] = None,
 ) -> str:
+    """
+    Constructs a rich free-text query string for CBF matching by combining
+    quiz strengths, profile data, and preferred program keywords.
+    """
     total = max(1, total)
-    thr = max(1, int(round(total * 0.05)))
+    threshold = max(1, int(round(total * 0.05)))
 
     strength_terms: List[str] = []
-    if strengths.get("programming", 0) >= thr:
+    if strengths.get("programming", 0) >= threshold:
         strength_terms += ["programming", "software", "coding", "algorithms"]
-    if strengths.get("networking", 0) >= thr:
+    if strengths.get("networking", 0) >= threshold:
         strength_terms += ["networking", "systems", "infrastructure", "security"]
-    if strengths.get("logic", 0) >= thr:
+    if strengths.get("logic", 0) >= threshold:
         strength_terms += ["analysis", "systems analysis", "requirements", "database"]
-    if strengths.get("design", 0) >= thr:
+    if strengths.get("design", 0) >= threshold:
         strength_terms += ["design", "multimedia", "instructional", "teaching"]
 
-    preferred_tokens = ""
-    preferred = normalize_program(preferred_program)
-    if preferred == "BSCS":
-        preferred_tokens = "computer science programming software development algorithms"
-    elif preferred == "BSIT":
-        preferred_tokens = "information technology networking systems infrastructure support"
-    elif preferred == "BSIS":
-        preferred_tokens = "information systems analysis database business process"
-    elif preferred == "BTVTED":
-        preferred_tokens = "btvted ict multimedia design educational technology teaching"
+    preferred_keyword_map: Dict[str, str] = {
+        "BSCS": "computer science programming software development algorithms",
+        "BSIT": "information technology networking systems infrastructure support",
+        "BSIS": "information systems analysis database business process",
+        "BTVTED": "btvted ict multimedia design educational technology teaching",
+    }
+    preferred_tokens = preferred_keyword_map.get(normalize_program(preferred_program), "")
 
-    # Append raw profile lists to enrich the query
-    extra = ""
-    if user_skills:
-        extra += " " + " ".join(normalize_text_list(user_skills))
-    if user_interests_list:
-        extra += " " + " ".join(normalize_text_list(user_interests_list))
-    if user_career_goals_list:
-        extra += " " + " ".join(normalize_text_list(user_career_goals_list))
+    extra_tokens = " ".join(
+        normalize_text_list((user_skills or []) + (user_interests_list or []) + (user_career_goals_list or []))
+    )
 
     return (
         f"{interests} {career_goals} {strand} "
-        f"{preferred_tokens} {' '.join(strength_terms)} {extra}"
+        f"{preferred_tokens} {' '.join(strength_terms)} {extra_tokens}"
     ).strip()
 
 
-# ----------------------------
-# Program Rationale Builder
-# ----------------------------
+# ---------------------------------------------------------------------------
+# Explainable AI (XAI) — LLM Integration via OpenRouter
+# ---------------------------------------------------------------------------
 
-def build_program_rationale(
-    program: str,
+
+def build_ai_explanation_prompt(
+    recommended_program: str,
+    weighted_scores: Dict[str, float],
+    profile_scores: Dict[str, Dict[str, float]],
     logic: int,
     programming: int,
     networking: int,
     design: int,
-    score: int,
-    total: int,
-    profile_scores: Optional[Dict[str, Dict[str, float]]] = None,
+    percent: float,
 ) -> str:
-    pct = (score / max(1, total)) * 100.0
-    p = normalize_program(program)
+    """
+    Constructs a structured prompt for the LLM to generate a human-readable,
+    advisor-style explanation of the recommendation result.
 
-    explanations = {
-        "BSIS": (
-            "You showed stronger logical thinking and analytical skills. "
-            "Information Systems fits this pattern because it focuses on logic, "
-            "systems analysis, databases, and business processes."
-        ),
-        "BSCS": (
-            "You performed best in programming-related questions. "
-            "Computer Science is suitable because it emphasizes coding, algorithms, "
-            "problem-solving, and deeper technical development."
-        ),
-        "BSIT": (
-            "Your strongest performance appeared in networking, web development, "
-            "and technical infrastructure areas. Information Technology is a good match "
-            "because it focuses on networking, web systems, hardware, and administration."
-        ),
-        "BTVTED": (
-            "You showed stronger results in design and creative technology-related areas. "
-            "BTVTED ICT fits this pattern because it focuses on multimedia, design, "
-            "digital tools, and technology-supported learning."
-        ),
-    }
+    The prompt includes quiz performance data, weighted scores, and profile
+    alignment metrics to enable a contextually grounded explanation.
 
-    profile_note = ""
-    if profile_scores:
-        ps = profile_scores.get(p, {})
-        skills_pct = int(ps.get("skills", 0) * 100)
-        interests_pct = int(ps.get("interests", 0) * 100)
-        goals_pct = int(ps.get("career_goals", 0) * 100)
-        profile_note = (
-            f" Profile alignment — Skills: {skills_pct}%, "
-            f"Interests: {interests_pct}%, Career Goals: {goals_pct}%."
-        )
+    Args:
+        recommended_program: Canonical program code (e.g., "BSCS").
+        weighted_scores: Final weighted score per program.
+        profile_scores: Per-program skills/interests/goals alignment scores.
+        logic: Student's logic sub-score.
+        programming: Student's programming sub-score.
+        networking: Student's networking sub-score.
+        design: Student's design sub-score.
+        percent: Overall quiz percentage score.
 
-    return (
-        f"{explanations.get(p, 'This program best matches your strongest area.')} "
-        f"(Logic={logic}, Programming={programming}, Networking={networking}, "
-        f"Design={design}, Score={score}/{total} [{pct:.1f}%])."
-        f"{profile_note}"
+    Returns:
+        str: A fully-formatted prompt string ready for the LLM.
+    """
+    rec_label = program_label(recommended_program)
+
+    # Format weighted scores as a readable table
+    scores_table = "\n".join(
+        f"  - {program_label(prog)}: {score * 100:.1f}%"
+        for prog, score in sorted(weighted_scores.items(), key=lambda x: x[1], reverse=True)
     )
 
+    # Format profile alignment
+    profile_table = "\n".join(
+        f"  - {program_label(prog)}: "
+        f"Skills={int(ps.get('skills', 0) * 100)}%, "
+        f"Interests={int(ps.get('interests', 0) * 100)}%, "
+        f"Career Goals={int(ps.get('career_goals', 0) * 100)}%"
+        for prog, ps in profile_scores.items()
+    )
 
-# ----------------------------
-# Main Entry Point
-# ----------------------------
+    return f"""You are an experienced academic career advisor for an IT college.
+
+A student has just completed an academic readiness and aptitude assessment. 
+Based on a hybrid recommendation engine combining K-Means clustering, 
+Content-Based Filtering, and a weighted scoring formula, the system has 
+produced the following results:
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RECOMMENDED PROGRAM: {rec_label}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Quiz Performance:
+  - Logic:         {logic}
+  - Programming:   {programming}
+  - Networking:    {networking}
+  - Design:        {design}
+  - Overall Score: {percent:.1f}%
+
+Weighted Program Scores (Quiz 60% | Skills 20% | Interests 10% | Goals 10%):
+{scores_table}
+
+Profile Alignment per Program:
+{profile_table}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+TASK:
+Write a clear, friendly, and professional explanation (3–4 short paragraphs) 
+addressed directly to the student explaining:
+  1. Why {rec_label} is the best match for their profile.
+  2. What specific strengths from their assessment support this recommendation.
+  3. What career paths or opportunities this program can lead to.
+  4. A brief motivational closing statement.
+
+Style guidelines:
+  - Use second-person ("you", "your") to address the student directly.
+  - Avoid revealing raw formula weights or technical computation details.
+  - Sound like a caring academic advisor, not a system report.
+  - Keep each paragraph to 3–4 sentences.
+"""
+
+
+def generate_ai_explanation(
+    prompt: str,
+    db: Any = None,
+    user_id: Optional[int] = None,
+    conversation_id: Optional[str] = None,
+) -> str:
+    """
+    Calls the OpenRouter LLM API to generate a human-readable,
+    advisor-style explanation for the recommendation.
+
+    Uses the model specified by the ``OPENROUTER_MODEL`` environment variable
+    (default: ``qwen/qwen3-235b-a22b:free``).
+
+    Args:
+        prompt: The fully-formatted prompt string from :func:`build_ai_explanation_prompt`.
+        db: Optional database connection (reserved for future logging/persistence).
+        user_id: Optional student ID for logging purposes.
+        conversation_id: Optional conversation ID for logging purposes.
+
+    Returns:
+        str: The LLM-generated advisory explanation, or a graceful fallback
+             message if the API call fails.
+    """
+    try:
+        import openai  # OpenRouter uses the OpenAI-compatible SDK
+
+        api_key = os.getenv("OPENROUTER_API_KEY", "")
+        if not api_key:
+            logger.warning("OPENROUTER_API_KEY is not set. Skipping AI explanation.")
+            return ""
+
+        client = openai.OpenAI(
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+        model = os.getenv("OPENROUTER_MODEL", "qwen/qwen3-235b-a22b:free")
+
+        logger.info(
+            "Generating AI explanation via OpenRouter | user_id=%s | model=%s",
+            user_id, model,
+        )
+
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                    "You are a professional academic career advisor.\n"
+                    "Only use the provided data. Do not invent scores, skills, or results.\n"
+                    "Do not contradict the recommendation."
+                ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=600,
+            temperature=0.7,
+        )
+
+        explanation = response.choices[0].message.content or ""
+        logger.info("AI explanation generated successfully for user_id=%s", user_id)
+        return explanation.strip()
+
+    except ImportError:
+        logger.error("openai package is not installed. Run: pip install openai")
+        return ""
+    except Exception as exc:  # noqa: BLE001
+        logger.error("AI explanation generation failed for user_id=%s: %s", user_id, exc)
+        return ""
+
+
+# ---------------------------------------------------------------------------
+# Main Recommendation Entry Point
+# ---------------------------------------------------------------------------
+
 
 def recommend_with_kmeans_and_cbf(
     *,
@@ -873,31 +1043,85 @@ def recommend_with_kmeans_and_cbf(
     strand: str = "",
     preferred_program: str = "",
     behavior_score: float = 0.0,
-    # NEW: structured profile inputs
     user_skills: Optional[List[str]] = None,
     user_interests: Optional[List[str]] = None,
     user_career_goals: Optional[List[str]] = None,
     historical_students: Optional[List[StudentVector]] = None,
     courses: Optional[List[CourseItem]] = None,
     top_n_courses: int = 10,
-) -> Dict:
+    # XAI / LLM parameters
+    enable_ai_explanation: bool = True,
+    db: Any = None,
+    conversation_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """
-    Main recommendation function.
+    Main entry point for the hybrid academic program recommendation system.
 
-    New profile parameters:
-      user_skills       — e.g. ["web design", "coding", "cybersecurity basics"]
-      user_interests    — e.g. ["web development", "artificial intelligence"]
-      user_career_goals — e.g. ["become web developer"]
+    This function orchestrates the following pipeline:
+
+    1. **K-Means Clustering** — Groups the student with similar historical
+       students to identify the most relevant peer cluster.
+
+    2. **Profile Scoring** — Computes skills, interests, and career goal
+       alignment scores against each program's keyword profile.
+
+    3. **Weighted Recommendation Formula** — Combines quiz sub-scores and
+       profile alignment into a final weighted score per program.
+
+    4. **GWA & Rating** — Converts the quiz score to an estimated GWA and
+       descriptive academic rating.
+
+    5. **Program Rationale** — Generates a rule-based explanation grounded
+       in the student's specific performance data.
+
+    6. **Explainable AI (XAI)** — Optionally calls an LLM via OpenRouter to
+       produce a human-like, advisor-style narrative explanation.
+
+    7. **Content-Based Filtering (CBF)** — Recommends relevant courses from
+       the recommended program using TF-IDF and cosine similarity.
+
+    Args:
+        user_id: Unique identifier for the student.
+        score: Total raw quiz score.
+        total: Maximum possible quiz score.
+        logic: Sub-score for logic questions (maps to BSIS).
+        programming: Sub-score for programming questions (maps to BSCS).
+        networking: Sub-score for networking questions (maps to BSIT).
+        design: Sub-score for design questions (maps to BTVTED).
+        interests: Free-text description of student interests.
+        career_goals: Free-text description of career goals.
+        strand: Senior High School strand of the student.
+        preferred_program: Student's self-reported preferred program.
+        behavior_score: Optional behavioural engagement score.
+        user_skills: Structured list of student skills.
+        user_interests: Structured list of student interests.
+        user_career_goals: Structured list of student career goals.
+        historical_students: Historical student vectors for K-Means fitting.
+        courses: Course catalogue for CBF recommendations.
+        top_n_courses: Number of course recommendations to return.
+        enable_ai_explanation: If True, calls the LLM to generate an explanation.
+        db: Optional database connection (passed to AI explanation logger).
+        conversation_id: Optional conversation ID for logging.
+
+    Returns:
+        Dict containing all recommendation outputs:
+            - ``user_id``, ``cluster_id``
+            - ``percent_score``, ``gwa``, ``rating``, ``gwa_remarks``
+            - ``preferred_program``, ``recommended_program``, ``confidence``
+            - ``weighted_scores``, ``profile_scores``
+            - ``message`` (full formatted report)
+            - ``ai_explanation`` (LLM-generated advisory text, if enabled)
+            - ``course_recommendations`` (list of CBF-matched courses)
     """
+    _skills = user_skills or []
+    _interests = user_interests or []
+    _goals = user_career_goals or []
 
-    # --- 1. K-Means clustering ---
+    # ── Step 1: K-Means Clustering ──────────────────────────────────────────
     feature_vec = build_student_feature_vector(
-        score=score,
-        total=total,
-        logic=logic,
-        programming=programming,
-        networking=networking,
-        design=design,
+        score=score, total=total,
+        logic=logic, programming=programming,
+        networking=networking, design=design,
         interests_text=interests,
         behavior_score=behavior_score,
     )
@@ -908,47 +1132,63 @@ def recommend_with_kmeans_and_cbf(
         km.fit(historical_students)
         cluster_id = km.predict(feature_vec)
 
-    # --- 2. Profile scoring ---
-    _skills = user_skills or []
-    _interests = user_interests or []
-    _goals = user_career_goals or []
+    logger.info("user_id=%s assigned to cluster_id=%s", user_id, cluster_id)
 
+    # ── Step 2: Profile Scoring ─────────────────────────────────────────────
     profile_scores = compute_profile_scores(
         user_skills=_skills,
         user_interests=_interests,
         user_career_goals=_goals,
     )
 
-    # --- 3. Weighted recommendation formula ---
+    # ── Step 3: Weighted Scoring & Program Selection ─────────────────────────
     weighted_scores = compute_weighted_scores(
-        quiz_score=score,
-        quiz_total=total,
-        logic=logic,
-        programming=programming,
-        networking=networking,
-        design=design,
+        quiz_score=score, quiz_total=total,
+        logic=logic, programming=programming,
+        networking=networking, design=design,
         profile_scores=profile_scores,
     )
-
-    recommended_program = pick_recommended_program(weighted_scores)
+    recommended_program = pick_recommended_program(weighted_scores, preferred_program)
     confidence = compute_confidence(weighted_scores, recommended_program)
 
-    # --- 4. GWA + Rating ---
+    logger.info(
+        "user_id=%s → recommended=%s | confidence=%d%%",
+        user_id, recommended_program, confidence,
+    )
+
+    # ── Step 4: GWA & Rating ────────────────────────────────────────────────
     gwa, rating_label, gwa_remarks, pct = compute_gwa_and_rating(score=score, total=total)
 
-    # --- 5. Rationale ---
+    # ── Step 5: Program Rationale ───────────────────────────────────────────
     rationale = build_program_rationale(
         program=recommended_program,
-        logic=logic,
-        programming=programming,
-        networking=networking,
-        design=design,
-        score=score,
-        total=total,
+        logic=logic, programming=programming,
+        networking=networking, design=design,
+        score=score, total=total,
         profile_scores=profile_scores,
     )
 
-    # --- 6. Explainable message ---
+    # ── Step 6: Explainable AI (XAI) ────────────────────────────────────────
+    ai_explanation = ""
+    if enable_ai_explanation:
+        ai_prompt = build_ai_explanation_prompt(
+            recommended_program=recommended_program,
+            weighted_scores=weighted_scores,
+            profile_scores=profile_scores,
+            logic=logic,
+            programming=programming,
+            networking=networking,
+            design=design,
+            percent=pct,
+        )
+        ai_explanation = generate_ai_explanation(
+            prompt=ai_prompt,
+            db=db,
+            user_id=user_id,
+            conversation_id=conversation_id,
+        )
+
+    # ── Step 7: Final Report Message ─────────────────────────────────────────
     final_message = build_explainable_message(
         gwa=gwa,
         rating=rating_label,
@@ -965,47 +1205,37 @@ def recommend_with_kmeans_and_cbf(
         program_rationale=rationale,
         weighted_scores=weighted_scores,
         profile_scores=profile_scores,
+        ai_explanation=ai_explanation,
     )
 
-    # --- 7. CBF course recommendations ---
-    cbf_results: List[Dict] = []
+    # ── Step 8: CBF Course Recommendations ───────────────────────────────────
+    cbf_results: List[Dict[str, Any]] = []
     if courses:
-        strengths = {
-            "logic": logic,
-            "programming": programming,
-            "networking": networking,
-            "design": design,
-        }
         student_text = build_student_query_text(
             interests=interests,
             career_goals=career_goals,
             strand=strand,
-            strengths=strengths,
+            strengths={"logic": logic, "programming": programming,
+                       "networking": networking, "design": design},
             total=total,
             preferred_program=preferred_program,
             user_skills=_skills,
             user_interests_list=_interests,
             user_career_goals_list=_goals,
         )
-
-        normalized_courses = [
+        normalised_courses = [
             CourseItem(
-                id=c.id,
-                code=c.code,
-                title=c.title,
-                description=c.description,
-                program=normalize_program(c.program),
-                level=c.level,
-                tags=c.tags,
+                id=c.id, code=c.code, title=c.title,
+                description=c.description, program=normalize_program(c.program),
+                level=c.level, tags=c.tags,
             )
             for c in courses
         ]
-
         cbf = CBFRecommender()
-        cbf.fit(normalized_courses)
+        cbf.fit(normalised_courses)
         cbf_results = cbf.recommend(
             student_text=student_text,
-            courses=normalized_courses,
+            courses=normalised_courses,
             top_n=top_n_courses,
             program_filter=recommended_program,
         )
@@ -1023,13 +1253,15 @@ def recommend_with_kmeans_and_cbf(
         "weighted_scores": weighted_scores,
         "profile_scores": profile_scores,
         "message": final_message,
+        "ai_explanation": ai_explanation,
         "course_recommendations": cbf_results,
     }
 
 
-# ----------------------------
-# Backward-compatible shim
-# ----------------------------
+# ---------------------------------------------------------------------------
+# Backward-Compatible Legacy Entry Point
+# ---------------------------------------------------------------------------
+
 
 def recommend_program(
     score: int,
@@ -1040,28 +1272,27 @@ def recommend_program(
     design: int = 0,
 ) -> Tuple[str, int, str]:
     """
-    Legacy entry point — no profile inputs.
-    Uses only quiz sub-scores to pick a program.
+    Legacy entry point for quiz-only recommendations (no profile inputs).
+
+    Provided for backward compatibility with existing integrations that do
+    not yet supply structured profile data.
+
+    Returns:
+        Tuple of (recommended_program_code, confidence_percent, rationale_text).
     """
     dummy_profile = compute_profile_scores([], [], [])
     weighted = compute_weighted_scores(
-        quiz_score=score,
-        quiz_total=total,
-        logic=logic,
-        programming=programming,
-        networking=networking,
-        design=design,
+        quiz_score=score, quiz_total=total,
+        logic=logic, programming=programming,
+        networking=networking, design=design,
         profile_scores=dummy_profile,
     )
     program = pick_recommended_program(weighted)
     confidence = compute_confidence(weighted, program)
     rationale = build_program_rationale(
         program=program,
-        logic=logic,
-        programming=programming,
-        networking=networking,
-        design=design,
-        score=score,
-        total=total,
+        logic=logic, programming=programming,
+        networking=networking, design=design,
+        score=score, total=total,
     )
     return program, confidence, rationale
