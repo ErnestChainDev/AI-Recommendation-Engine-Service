@@ -14,8 +14,8 @@ human-readable, advisor-style explanations for each recommendation.
 Formula:
     Final Score = (Quiz × 60%) + (Skills × 20%) + (Interests × 10%) + (Career Goals × 10%)
 
-Author  : [Your Name]
-Version : 2.0.0
+Author  : ErnestChainDev
+Version : 3.1.15
 """
 
 from __future__ import annotations
@@ -767,7 +767,7 @@ def build_explainable_message(
             for i, c in enumerate(course_recommendations)
         ]
         courses_section = (
-            "\n\n 📚 Suggested Courses\n"
+            "\n\n Suggested Courses\n"
             + "\n".join(course_lines)
         )
 
