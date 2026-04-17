@@ -15,7 +15,7 @@ Formula:
     Final Score = (Quiz × 60%) + (Skills × 20%) + (Interests × 10%) + (Career Goals × 10%)
 
 Author  : ErnestChainDev
-Version : 3.1.15
+Version : 4.0.0 (v5 Defense Ready — BERT + Fuzzy + Token Profile Scoring)
 """
 
 from __future__ import annotations
@@ -26,7 +26,22 @@ import os
 import random
 import re
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
+
+# ---------------------------------------------------------------------------
+# BERT (Sentence Transformers)
+# ---------------------------------------------------------------------------
+
+st_util = None
+
+try:
+    from sentence_transformers import SentenceTransformer, util as st_util
+    BERT_MODEL = SentenceTransformer('all-MiniLM-L6-v2')
+    _BERT_AVAILABLE = True
+except ImportError:
+    BERT_MODEL = None
+    _BERT_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -42,9 +57,9 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-WEIGHT_QUIZ: float = 0.60
-WEIGHT_SKILLS: float = 0.20
-WEIGHT_INTERESTS: float = 0.10
+WEIGHT_QUIZ: float        = 0.60
+WEIGHT_SKILLS: float      = 0.20
+WEIGHT_INTERESTS: float   = 0.10
 WEIGHT_CAREER_GOALS: float = 0.10
 
 _TOKEN_RE = re.compile(r"[a-z0-9\-]+")
@@ -61,9 +76,9 @@ _PROGRAM_ALIASES: Dict[str, str] = {
 }
 
 PROGRAM_LABELS: Dict[str, str] = {
-    "BSCS": "BSCS (Computer Science)",
-    "BSIT": "BSIT (Information Technology)",
-    "BSIS": "BSIS (Information Systems)",
+    "BSCS":   "BSCS (Computer Science)",
+    "BSIT":   "BSIT (Information Technology)",
+    "BSIS":   "BSIS (Information Systems)",
     "BTVTED": "BTVTED ICT",
 }
 
@@ -113,15 +128,40 @@ PROGRAM_MAPPING: Dict[str, Dict[str, List[str]]] = {
 }
 
 # ---------------------------------------------------------------------------
+# Synonyms (v5 Defense Ready)
+# ---------------------------------------------------------------------------
+
+SYNONYMS: Dict[str, str] = {
+    "developer":  "development",
+    "programmer": "programming",
+    "coder":      "programming",
+    "webdev":     "web",
+    "frontend":   "web",
+    "backend":    "web",
+    "teacher":    "teaching",
+    "instructor": "teaching",
+    "analyst":    "analysis",
+}
+
+# ---------------------------------------------------------------------------
 # Utility Functions
 # ---------------------------------------------------------------------------
 
 
 def tokenize(text: str) -> List[str]:
-    """Lowercases and extracts alphanumeric tokens from *text*."""
     if not text:
         return []
-    return _TOKEN_RE.findall(text.lower())
+
+    tokens = _TOKEN_RE.findall(text.lower())
+
+    result: List[str] = []
+    for t in tokens:
+        value = SYNONYMS.get(t, t)
+        if value is None:
+            value = t
+        result.append(str(value))
+
+    return result
 
 
 def normalize_text_list(items: List[str]) -> List[str]:
@@ -137,7 +177,10 @@ def normalize_program(raw: str) -> str:
 
 def program_label(program: str) -> str:
     """Returns a human-readable label for a canonical program code."""
-    return PROGRAM_LABELS.get(normalize_program(program), normalize_program(program) or "Unknown Program")
+    return PROGRAM_LABELS.get(
+        normalize_program(program),
+        normalize_program(program) or "Unknown Program",
+    )
 
 
 def cosine_sim_sparse(a: Dict[str, float], b: Dict[str, float]) -> float:
@@ -145,8 +188,8 @@ def cosine_sim_sparse(a: Dict[str, float], b: Dict[str, float]) -> float:
     if not a or not b:
         return 0.0
     dot = sum(v * b.get(k, 0.0) for k, v in a.items())
-    na = math.sqrt(sum(v * v for v in a.values()))
-    nb = math.sqrt(sum(v * v for v in b.values()))
+    na  = math.sqrt(sum(v * v for v in a.values()))
+    nb  = math.sqrt(sum(v * v for v in b.values()))
     if na == 0.0 or nb == 0.0:
         return 0.0
     return dot / (na * nb)
@@ -159,8 +202,70 @@ def l2_distance(a: List[float], b: List[float]) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Profile Scoring
+# Fuzzy Match (v5 Defense Ready)
 # ---------------------------------------------------------------------------
+
+
+def fuzzy(a: str, b: str) -> float:
+    """Returns a fuzzy string similarity ratio between two strings."""
+    return SequenceMatcher(None, a, b).ratio()
+
+
+# ---------------------------------------------------------------------------
+# BERT Similarity (v5 Defense Ready)
+# ---------------------------------------------------------------------------
+
+
+def bert_similarity(a: str, refs: List[str]) -> float:
+    if not _BERT_AVAILABLE or BERT_MODEL is None or st_util is None:
+        return 0.0
+
+    if not a or not refs:
+        return 0.0
+
+    emb1 = BERT_MODEL.encode(a, convert_to_tensor=True)
+    emb2 = BERT_MODEL.encode(refs, convert_to_tensor=True)
+
+    scores = st_util.cos_sim(emb1, emb2)[0]
+    return float(scores.max())
+
+
+# ---------------------------------------------------------------------------
+# Profile Scoring  (v5 Defense Ready — Token + Fuzzy + BERT)
+# ---------------------------------------------------------------------------
+
+
+def match_score(user_list: List[str], ref_list: List[str]) -> float:
+    """
+    Measures alignment between a user's profile items and a reference keyword
+    list using three complementary signals:
+
+        1. Token overlap  — exact token-level intersection
+        2. Fuzzy match    — SequenceMatcher string similarity
+        3. BERT similarity— semantic sentence-embedding cosine similarity
+
+    The final per-item score is the *maximum* of all three signals,
+    so even paraphrased or semantically related items are captured.
+
+    Returns:
+        float: Average match score in [0.0, 1.0], rounded to 4 decimal places.
+    """
+    if not user_list:
+        return 0.0
+
+    scores: List[float] = []
+    for u in user_list:
+        u_tokens   = set(tokenize(u))
+        ref_tokens = [set(tokenize(r)) for r in ref_list]
+
+        token_match  = any(u_tokens & r for r in ref_tokens)
+        fuzzy_score  = max((fuzzy(u, r) for r in ref_list), default=0.0)
+        bert_score   = bert_similarity(u, ref_list)
+
+        final = max(1.0 if token_match else 0.0, fuzzy_score, bert_score)
+        scores.append(final)
+
+    return round(sum(scores) / len(scores), 4)
 
 
 def score_profile_against_mapping(
@@ -169,22 +274,25 @@ def score_profile_against_mapping(
 ) -> float:
     """
     Measures how many of the student's profile items overlap with a
-    program's keyword list, using token-level partial matching.
+    program's keyword list using token-level partial matching.
 
     Returns:
         float: Overlap ratio in [0.0, 1.0], normalised over mapping size.
+
+    Note:
+        For richer semantic matching (fuzzy + BERT), use ``match_score``
+        instead — this function is retained for lightweight / legacy use.
     """
     if not user_items or not mapping_items:
         return 0.0
 
-    user_token_sets = [set(tokenize(item)) for item in user_items]
+    user_token_sets    = [set(tokenize(item)) for item in user_items]
     mapping_token_sets = [set(tokenize(item)) for item in mapping_items]
 
-    matched = 0
-    for u_tokens in user_token_sets:
-        if any(u_tokens & m_tokens for m_tokens in mapping_token_sets):
-            matched += 1
-
+    matched = sum(
+        1 for u_tokens in user_token_sets
+        if any(u_tokens & m_tokens for m_tokens in mapping_token_sets)
+    )
     return matched / len(mapping_items)
 
 
@@ -194,24 +302,24 @@ def score_career_goals_against_mapping(
 ) -> float:
     """
     Scores career goals against the combined interests and skills of a
-    program, since goals can overlap either domain.
+    program using the enhanced Token + Fuzzy + BERT pipeline.
+
+    Falls back to token-only matching when BERT is unavailable.
 
     Returns:
         float: Match ratio in [0.0, 1.0].
     """
-    mapping = PROGRAM_MAPPING.get(program, {})
+    mapping  = PROGRAM_MAPPING.get(program, {})
     combined = mapping.get("interests", []) + mapping.get("skills", [])
     if not combined:
         return 0.0
 
-    user_token_sets = [set(tokenize(g)) for g in career_goals if g.strip()]
-    combined_token_sets = [set(tokenize(item)) for item in combined]
+    norm_goals = [g for g in career_goals if g.strip()]
+    if not norm_goals:
+        return 0.0
 
-    matched = sum(
-        1 for u_tokens in user_token_sets
-        if any(u_tokens & m for m in combined_token_sets)
-    )
-    return min(1.0, matched / max(1, len(combined_token_sets)))
+    # Use the rich match_score pipeline (Token + Fuzzy + BERT)
+    return min(1.0, match_score(norm_goals, combined))
 
 
 def compute_profile_scores(
@@ -223,6 +331,9 @@ def compute_profile_scores(
     Computes per-program profile alignment scores across three dimensions:
     skills, interests, and career goals.
 
+    Skills and Interests use the enhanced ``match_score`` pipeline
+    (Token + Fuzzy + BERT) for maximum recall.
+
     Returns:
         Dict mapping each program code to a sub-score dictionary, e.g.::
 
@@ -231,17 +342,17 @@ def compute_profile_scores(
                 ...
             }
     """
-    norm_skills = normalize_text_list(user_skills)
+    norm_skills    = normalize_text_list(user_skills)
     norm_interests = normalize_text_list(user_interests)
-    norm_goals = normalize_text_list(user_career_goals)
+    norm_goals     = normalize_text_list(user_career_goals)
 
     return {
         program: {
             "skills": round(
-                score_profile_against_mapping(norm_skills, mapping.get("skills", [])), 4
+                match_score(norm_skills, mapping.get("skills", [])), 4
             ),
             "interests": round(
-                score_profile_against_mapping(norm_interests, mapping.get("interests", [])), 4
+                match_score(norm_interests, mapping.get("interests", [])), 4
             ),
             "career_goals": round(
                 score_career_goals_against_mapping(norm_goals, program), 4
@@ -280,14 +391,14 @@ def compute_weighted_scores(
     Returns:
         Dict mapping each program code to a score in [0.0, 1.0].
     """
-    quiz_total = max(1, quiz_total)
+    quiz_total  = max(1, quiz_total)
     overall_pct = quiz_score / quiz_total
 
     program_quiz_map: Dict[str, float] = {
-        "BSCS": programming / quiz_total,
-        "BSIT": networking / quiz_total,
-        "BSIS": logic / quiz_total,
-        "BTVTED": design / quiz_total,
+        "BSCS":   programming / quiz_total,
+        "BSIT":   networking  / quiz_total,
+        "BSIS":   logic       / quiz_total,
+        "BTVTED": design      / quiz_total,
     }
 
     weighted: Dict[str, float] = {}
@@ -295,8 +406,8 @@ def compute_weighted_scores(
         quiz_component = (overall_pct * 0.5) + (program_quiz_map.get(program, 0.0) * 0.5)
         p = profile_scores.get(program, {})
         final = (
-            quiz_component * WEIGHT_QUIZ
-            + p.get("skills", 0.0) * WEIGHT_SKILLS
+            quiz_component            * WEIGHT_QUIZ
+            + p.get("skills", 0.0)    * WEIGHT_SKILLS
             + p.get("interests", 0.0) * WEIGHT_INTERESTS
             + p.get("career_goals", 0.0) * WEIGHT_CAREER_GOALS
         )
@@ -320,7 +431,7 @@ def pick_recommended_program(
     if not weighted_scores:
         return "BSIT"
 
-    max_score = max(weighted_scores.values())
+    max_score    = max(weighted_scores.values())
     top_programs = [p for p, s in weighted_scores.items() if s == max_score]
 
     if len(top_programs) == 1:
@@ -350,10 +461,10 @@ def compute_confidence(
     if not weighted_scores:
         return 50
 
-    sorted_scores = sorted(weighted_scores.values(), reverse=True)
-    top, second = sorted_scores[0], (sorted_scores[1] if len(sorted_scores) > 1 else 0.0)
-    margin = top - second
-    raw_conf = int(min(97, max(50, top * 100)))
+    sorted_scores  = sorted(weighted_scores.values(), reverse=True)
+    top, second    = sorted_scores[0], (sorted_scores[1] if len(sorted_scores) > 1 else 0.0)
+    margin         = top - second
+    raw_conf       = int(min(97, max(50, top * 100)))
 
     if margin >= 0.10:
         raw_conf = min(97, raw_conf + 5)
@@ -375,7 +486,7 @@ def compute_gwa_and_rating(score: int, total: int) -> Tuple[float, str, str, flo
     Returns:
         Tuple of (gwa, rating_label, remarks, percent_score).
     """
-    total = max(1, total)
+    total   = max(1, total)
     percent = (score / total) * 100.0
 
     gwa_table = [
@@ -420,13 +531,13 @@ def compute_gwa_and_rating(score: int, total: int) -> Tuple[float, str, str, flo
 @dataclass
 class CourseItem:
     """Represents a single academic course for CBF recommendation."""
-    id: int
-    code: str
-    title: str
+    id:          int
+    code:        str
+    title:       str
     description: str
-    program: str
-    level: str
-    tags: str
+    program:     str
+    level:       str
+    tags:        str
 
     def as_text(self) -> str:
         """Concatenates all course fields into a single searchable string."""
@@ -440,13 +551,13 @@ class CBFRecommender:
     """
 
     def __init__(self) -> None:
-        self._idf: Dict[str, float] = {}
+        self._idf: Dict[str, float]              = {}
         self._course_vecs: Dict[int, Dict[str, float]] = {}
-        self._fitted: bool = False
+        self._fitted: bool                       = False
 
     def fit(self, courses: List[CourseItem]) -> None:
         """Builds the IDF index and TF-IDF vectors for all courses."""
-        df: Dict[str, int] = {}
+        df: Dict[str, int]           = {}
         docs_tokens: Dict[int, List[str]] = {}
 
         for course in courses:
@@ -455,7 +566,7 @@ class CBFRecommender:
             for token in set(tokens):
                 df[token] = df.get(token, 0) + 1
 
-        n_docs = max(1, len(courses))
+        n_docs    = max(1, len(courses))
         self._idf = {
             t: math.log((n_docs + 1) / (cnt + 1)) + 1.0
             for t, cnt in df.items()
@@ -500,8 +611,8 @@ class CBFRecommender:
             self.fit(courses)
 
         query_vec = self._vectorize_query(student_text)
-        pf = normalize_program(program_filter) if program_filter else None
-        by_id = {c.id: c for c in courses}
+        pf        = normalize_program(program_filter) if program_filter else None
+        by_id     = {c.id: c for c in courses}
 
         scored: List[Tuple[int, float]] = [
             (c.id, cosine_sim_sparse(query_vec, self._course_vecs[c.id]))
@@ -513,10 +624,10 @@ class CBFRecommender:
         return [
             {
                 "course_id": cid,
-                "code": by_id[cid].code,
-                "title": by_id[cid].title,
-                "program": normalize_program(by_id[cid].program),
-                "score": round(sim, 6),
+                "code":      by_id[cid].code,
+                "title":     by_id[cid].title,
+                "program":   normalize_program(by_id[cid].program),
+                "score":     round(sim, 6),
             }
             for cid, sim in scored[:max(1, top_n)]
         ]
@@ -530,7 +641,7 @@ class CBFRecommender:
 @dataclass
 class StudentVector:
     """Stores a student's feature vector for K-Means clustering."""
-    user_id: int
+    user_id:  int
     features: List[float]
 
 
@@ -541,12 +652,12 @@ class KMeansClusterer:
     """
 
     def __init__(self, k: int = 4, max_iter: int = 50, seed: int = 42) -> None:
-        self.k = k
-        self.max_iter = max_iter
-        self.seed = seed
+        self.k          = k
+        self.max_iter   = max_iter
+        self.seed       = seed
         self.centroids: List[List[float]] = []
         self._fitted: bool = False
-        self._dim: int = 0
+        self._dim: int     = 0
 
     def fit(self, data: List[StudentVector]) -> None:
         """Fits the clusterer to a list of student feature vectors."""
@@ -558,13 +669,13 @@ class KMeansClusterer:
         if not points:
             return self._reset()
 
-        dim = len(points[0])
+        dim    = len(points[0])
         points = [p for p in points if len(p) == dim]
         if not points:
             return self._reset()
 
-        self._dim = dim
-        init_k = min(self.k, len(points))
+        self._dim  = dim
+        init_k     = min(self.k, len(points))
         self.centroids = [p[:] for p in random.sample(points, k=init_k)]
         while len(self.centroids) < self.k:
             self.centroids.append(points[0][:])
@@ -599,13 +710,15 @@ class KMeansClusterer:
         self.centroids, self._fitted, self._dim = [], False, 0
 
     def _nearest_centroid_index(self, point: List[float]) -> int:
-        return min(range(len(self.centroids)), key=lambda i: l2_distance(point, self.centroids[i]))
+        return min(
+            range(len(self.centroids)),
+            key=lambda i: l2_distance(point, self.centroids[i]),
+        )
 
     @staticmethod
     def _mean_vector(points: List[List[float]]) -> List[float]:
         dim = len(points[0])
-        out = [sum(p[j] for p in points) / len(points) for j in range(dim)]
-        return out
+        return [sum(p[j] for p in points) / len(points) for j in range(dim)]
 
 
 # ---------------------------------------------------------------------------
@@ -627,15 +740,17 @@ def build_student_feature_vector(
     Constructs a 7-dimensional numeric feature vector representing a student's
     academic profile for use in K-Means clustering.
 
-    Dimensions: [overall%, logic%, programming%, networking%, design%, interest_token_count, behavior_score]
+    Dimensions:
+        [overall%, logic%, programming%, networking%, design%,
+         interest_token_count, behavior_score]
     """
     total = max(1, total)
     return [
-        (score / total) * 100.0,
-        (logic / total) * 100.0,
+        (score       / total) * 100.0,
+        (logic       / total) * 100.0,
         (programming / total) * 100.0,
-        (networking / total) * 100.0,
-        (design / total) * 100.0,
+        (networking  / total) * 100.0,
+        (design      / total) * 100.0,
         float(len(tokenize(interests_text))),
         float(behavior_score),
     ]
@@ -661,7 +776,7 @@ def build_student_query_text(
     Constructs a rich free-text query string for CBF matching by combining
     quiz strengths, profile data, and preferred program keywords.
     """
-    total = max(1, total)
+    total     = max(1, total)
     threshold = max(1, int(round(total * 0.05)))
 
     strength_terms: List[str] = []
@@ -675,15 +790,17 @@ def build_student_query_text(
         strength_terms += ["design", "multimedia", "instructional", "teaching"]
 
     preferred_keyword_map: Dict[str, str] = {
-        "BSCS": "computer science programming software development algorithms",
-        "BSIT": "information technology networking systems infrastructure support",
-        "BSIS": "information systems analysis database business process",
+        "BSCS":   "computer science programming software development algorithms",
+        "BSIT":   "information technology networking systems infrastructure support",
+        "BSIS":   "information systems analysis database business process",
         "BTVTED": "btvted ict multimedia design educational technology teaching",
     }
     preferred_tokens = preferred_keyword_map.get(normalize_program(preferred_program), "")
 
     extra_tokens = " ".join(
-        normalize_text_list((user_skills or []) + (user_interests_list or []) + (user_career_goals_list or []))
+        normalize_text_list(
+            (user_skills or []) + (user_interests_list or []) + (user_career_goals_list or [])
+        )
     )
 
     return (
@@ -782,6 +899,7 @@ def build_explainable_message(
         f" Recommendation\n"
         f"   Preferred Program  : {preferred_text}\n"
         f"   Recommended Program: {program_label(recommended_program)}\n"
+        f"   Confidence         : {confidence}%\n"
         f"{scores_section}"
         f"{ai_section}"
         f"{courses_section}\n"
@@ -813,7 +931,7 @@ def build_ai_explanation_prompt(
       - Preferred program vs recommended program
       - Professional reason why the recommended program suits the student
     """
-    rec_label = program_label(recommended_program)
+    rec_label  = program_label(recommended_program)
     pref_label = program_label(preferred_program) if preferred_program else "Not specified"
 
     scores_table = "\n".join(
@@ -823,9 +941,9 @@ def build_ai_explanation_prompt(
 
     rec_profile = profile_scores.get(normalize_program(recommended_program), {})
 
-    skills_str     = ", ".join(user_skills)     if user_skills     else "not specified"
-    interests_str  = ", ".join(user_interests)  if user_interests  else "not specified"
-    goals_str      = ", ".join(user_career_goals) if user_career_goals else "not specified"
+    skills_str    = ", ".join(user_skills)        if user_skills        else "not specified"
+    interests_str = ", ".join(user_interests)     if user_interests     else "not specified"
+    goals_str     = ", ".join(user_career_goals)  if user_career_goals  else "not specified"
 
     return f"""You are a professional academic program advisor for an IT college.
 
@@ -844,8 +962,8 @@ Program Scores:
 {scores_table}
 
 Profile Alignment for {rec_label}:
-  - Skills Match     : {int(rec_profile.get('skills', 0) * 100)}%
-  - Interests Match  : {int(rec_profile.get('interests', 0) * 100)}%
+  - Skills Match      : {int(rec_profile.get('skills', 0) * 100)}%
+  - Interests Match   : {int(rec_profile.get('interests', 0) * 100)}%
   - Career Goals Match: {int(rec_profile.get('career_goals', 0) * 100)}%
 
 TASK:
@@ -955,16 +1073,16 @@ def recommend_with_kmeans_and_cbf(
 
     Pipeline:
         1. K-Means Clustering
-        2. Profile Scoring
+        2. Profile Scoring  (Token + Fuzzy + BERT)
         3. Weighted Recommendation Formula
         4. GWA & Rating
         5. Explainable AI (XAI) via LLM
         6. CBF Course Recommendations
         7. Final Report Message
     """
-    _skills  = user_skills    or []
-    _interests = user_interests or []
-    _goals   = user_career_goals or []
+    _skills    = user_skills        or []
+    _interests = user_interests     or []
+    _goals     = user_career_goals  or []
 
     # ── Step 1: K-Means Clustering ──────────────────────────────────────────
     feature_vec = build_student_feature_vector(
@@ -983,7 +1101,7 @@ def recommend_with_kmeans_and_cbf(
 
     logger.info("user_id=%s assigned to cluster_id=%s", user_id, cluster_id)
 
-    # ── Step 2: Profile Scoring ─────────────────────────────────────────────
+    # ── Step 2: Profile Scoring (Token + Fuzzy + BERT) ─────────────────────
     profile_scores = compute_profile_scores(
         user_skills=_skills,
         user_interests=_interests,
@@ -998,7 +1116,7 @@ def recommend_with_kmeans_and_cbf(
         profile_scores=profile_scores,
     )
     recommended_program = pick_recommended_program(weighted_scores, preferred_program)
-    confidence = compute_confidence(weighted_scores, recommended_program)
+    confidence          = compute_confidence(weighted_scores, recommended_program)
 
     logger.info(
         "user_id=%s → recommended=%s | confidence=%d%%",
@@ -1048,7 +1166,8 @@ def recommend_with_kmeans_and_cbf(
         normalised_courses = [
             CourseItem(
                 id=c.id, code=c.code, title=c.title,
-                description=c.description, program=normalize_program(c.program),
+                description=c.description,
+                program=normalize_program(c.program),
                 level=c.level, tags=c.tags,
             )
             for c in courses
@@ -1079,19 +1198,19 @@ def recommend_with_kmeans_and_cbf(
     )
 
     return {
-        "user_id": user_id,
-        "cluster_id": cluster_id,
-        "percent_score": pct,
-        "gwa": gwa,
-        "rating": rating_label,
-        "gwa_remarks": gwa_remarks,
-        "preferred_program": normalize_program(preferred_program) if preferred_program else "",
-        "recommended_program": recommended_program,
-        "confidence": confidence,
-        "weighted_scores": weighted_scores,
-        "profile_scores": profile_scores,
-        "message": final_message,
-        "ai_explanation": ai_explanation,
+        "user_id":               user_id,
+        "cluster_id":            cluster_id,
+        "percent_score":         pct,
+        "gwa":                   gwa,
+        "rating":                rating_label,
+        "gwa_remarks":           gwa_remarks,
+        "preferred_program":     normalize_program(preferred_program) if preferred_program else "",
+        "recommended_program":   recommended_program,
+        "confidence":            confidence,
+        "weighted_scores":       weighted_scores,
+        "profile_scores":        profile_scores,
+        "message":               final_message,
+        "ai_explanation":        ai_explanation,
         "course_recommendations": cbf_results,
     }
 
@@ -1116,12 +1235,12 @@ def recommend_program(
         Tuple of (recommended_program_code, confidence_percent, dummy_rationale).
     """
     dummy_profile = compute_profile_scores([], [], [])
-    weighted = compute_weighted_scores(
+    weighted      = compute_weighted_scores(
         quiz_score=score, quiz_total=total,
         logic=logic, programming=programming,
         networking=networking, design=design,
         profile_scores=dummy_profile,
     )
-    program = pick_recommended_program(weighted)
+    program    = pick_recommended_program(weighted)
     confidence = compute_confidence(weighted, program)
     return program, confidence, ""
