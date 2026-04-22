@@ -127,6 +127,11 @@ PROGRAM_MAPPING: Dict[str, Dict[str, List[str]]] = {
     },
 }
 
+ALL_KEYWORDS = [
+    *sum([v["skills"] for v in PROGRAM_MAPPING.values()], []),
+    *sum([v["interests"] for v in PROGRAM_MAPPING.values()], [])
+]
+
 # ---------------------------------------------------------------------------
 # Synonyms (v5 Defense Ready)
 # ---------------------------------------------------------------------------
@@ -236,33 +241,36 @@ def bert_similarity(a: str, refs: List[str]) -> float:
 
 
 def match_score(user_list: List[str], ref_list: List[str]) -> float:
-    """
-    Measures alignment between a user's profile items and a reference keyword
-    list using three complementary signals:
-
-        1. Token overlap  — exact token-level intersection
-        2. Fuzzy match    — SequenceMatcher string similarity
-        3. BERT similarity— semantic sentence-embedding cosine similarity
-
-    The final per-item score is the *maximum* of all three signals,
-    so even paraphrased or semantically related items are captured.
-
-    Returns:
-        float: Average match score in [0.0, 1.0], rounded to 4 decimal places.
-    """
     if not user_list:
         return 0.0
 
+    # safety check
+    if not ref_list:
+        return 0.2  # fallback if no reference exists
+
     scores: List[float] = []
+
     for u in user_list:
         u_tokens   = set(tokenize(u))
         ref_tokens = [set(tokenize(r)) for r in ref_list]
 
-        token_match  = any(u_tokens & r for r in ref_tokens)
-        fuzzy_score  = max((fuzzy(u, r) for r in ref_list), default=0.0)
-        bert_score   = bert_similarity(u, ref_list)
+        token_overlap = max(
+            (len(u_tokens & r) / max(1, len(u_tokens)) for r in ref_tokens),
+            default=0.0
+        )
 
-        final = max(1.0 if token_match else 0.0, fuzzy_score, bert_score)
+        fuzzy_score = max((fuzzy(u, r) for r in ref_list), default=0.0)
+        bert_score  = bert_similarity(u, ref_list)
+
+        # detect no meaningful match
+        no_match = token_overlap < 0.2 and fuzzy_score < 0.3 and bert_score < 0.3
+
+        if no_match:
+            final = min(0.25, 0.15 + (0.02 * len(u_tokens)))
+        else:
+            # weighted combination instead of hard max
+            final = max(token_overlap, fuzzy_score, bert_score)
+
         scores.append(final)
 
     return round(sum(scores) / len(scores), 4)
@@ -331,35 +339,44 @@ def compute_profile_scores(
     Computes per-program profile alignment scores across three dimensions:
     skills, interests, and career goals.
 
-    Skills and Interests use the enhanced ``match_score`` pipeline
-    (Token + Fuzzy + BERT) for maximum recall.
-
-    Returns:
-        Dict mapping each program code to a sub-score dictionary, e.g.::
-
-            {
-                "BSCS": {"skills": 0.80, "interests": 0.60, "career_goals": 0.40},
-                ...
-            }
+    Improvements:
+    - Handles custom/unmapped inputs using global keyword matching
+    - Applies controlled boosting based on number of inputs
+    - Balances program-specific and general relevance scoring
     """
+
     norm_skills    = normalize_text_list(user_skills)
     norm_interests = normalize_text_list(user_interests)
     norm_goals     = normalize_text_list(user_career_goals)
 
-    return {
-        program: {
-            "skills": round(
-                match_score(norm_skills, mapping.get("skills", [])), 4
-            ),
-            "interests": round(
-                match_score(norm_interests, mapping.get("interests", [])), 4
-            ),
-            "career_goals": round(
-                score_career_goals_against_mapping(norm_goals, program), 4
-            ),
+    # compute once (optimization)
+    global_skill_match    = match_score(norm_skills, ALL_KEYWORDS)
+    global_interest_match = match_score(norm_interests, ALL_KEYWORDS)
+
+    results = {}
+
+    for program, mapping in PROGRAM_MAPPING.items():
+
+        # SKILLS
+        program_skill_match = match_score(norm_skills, mapping.get("skills", []))
+        skill_score = (0.7 * program_skill_match) + (0.3 * global_skill_match)
+        skill_score = min(1.0, skill_score + min(0.1, len(norm_skills) * 0.02))
+
+        # INTERESTS
+        program_interest_match = match_score(norm_interests, mapping.get("interests", []))
+        interest_score = (0.7 * program_interest_match) + (0.3 * global_interest_match)
+        interest_score = min(1.0, interest_score + min(0.1, len(norm_interests) * 0.02))
+
+        # CAREER
+        career_score = score_career_goals_against_mapping(norm_goals, program)
+
+        results[program] = {
+            "skills": round(skill_score, 4),
+            "interests": round(interest_score, 4),
+            "career_goals": round(career_score, 4),
         }
-        for program, mapping in PROGRAM_MAPPING.items()
-    }
+
+    return results
 
 
 # ---------------------------------------------------------------------------
